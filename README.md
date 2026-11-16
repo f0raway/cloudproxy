@@ -244,12 +244,22 @@ Action: Direct
 ## 监控、日志与排查
 
 ```bash
-curl -s http://127.0.0.1:8081/api/stats
+curl --user YOUR_PROXY_USER -s http://127.0.0.1:8081/api/stats
 sudo tail -100 /var/log/scf-tunnel-proxy/service.log
 sudo systemctl status scf-tunnel-proxy --no-pager
 ```
 
-监控显示区域状态、节点错误和目标错误、活跃/正在建连数量、预算/并发/私网拒绝、目标退避计数及本地费用估算。
+监控页每 2 秒更新：
+
+- **来源 → 目标**：来源 IP/端口、目标域名或 IP/端口、SOCKS5 / CONNECT / HTTP 协议与所选区域。
+- **逐条状态**：握手/认证、等待、连接中、TCP 已连接、已结束、失败；显示持续时间和双向流量。
+- **错误详情**：认证失败、目标不可达、预算/并发/私网拒绝、传输错误和超时；点击行展开区域尝试及失败原因。
+- **筛选与排查**：来源/目标/错误搜索、协议与状态筛选、暂停刷新；接口中断时明确标记旧数据。
+- **历史记录**：内存保留最近 1,000 条结束记录，活跃记录单独保留；重启清空。单页显示筛选后的前 200 条。
+
+页面及两个接口均使用**现有代理账号和密码**进行 HTTP Basic 登录。上面的 curl 会提示输入密码；不要把密码直接写入命令历史。默认只监听回环地址，推荐通过 SSH 隧道访问。升级时请同时更新 `ops/watchdog.py`，旧版无认证的健康检查会收到 401。
+
+服务器无法读取客户端的进程名；来源经过 NAT 后可能相同。**已连接表示目标 TCP 建连成功，不保证 TLS 或网站业务成功**；HTTP 响应码另行展示，HTTP 4xx/5xx 不冒充代理网络失败。普通 HTTP 按请求记录（正文流量），即使复用隧道也各自保留来源；SOCKS5 / CONNECT 按 TCP 连接记录（隧道流量）。不记录路径、查询参数、请求正文或认证信息。[监控机制与升级说明](docs/MONITORING.md)
 
 需要在电脑查看面板时使用 SSH 隧道：
 
@@ -257,7 +267,7 @@ sudo systemctl status scf-tunnel-proxy --no-pager
 ssh -L 18081:127.0.0.1:8081 your-user@your-server
 ```
 
-随后访问 `http://127.0.0.1:18081`。[错误码与排查步骤](docs/TROUBLESHOOTING.md)
+随后访问 `http://127.0.0.1:18081`，使用代理账号密码登录。[错误码与排查步骤](docs/TROUBLESHOOTING.md)
 
 ## 开发与验证
 
@@ -265,11 +275,12 @@ ssh -L 18081:127.0.0.1:8081 your-user@your-server
 go test -race -timeout 90s ./...
 go vet ./...
 python3 -m unittest discover -s deploy -p 'test_*.py' -v
+python3 -m unittest discover -s ops -p 'test_*.py' -v
 bash -n ops/build.sh ops/install.sh
 bash ops/build.sh
 ```
 
-Go 测试覆盖 TLS 证书透传与连接复用、SOCKS5 认证、二进制流与半关闭、目标错误分类、私网拒绝、失败目标退避、账本持久化/跨月、滚动预算及正常停止结算。Python 测试覆盖打包格式/可执行权限、私有文件权限、配置生成与升级保留。
+Go 测试覆盖 TLS 证书透传与连接复用、SOCKS5 认证、二进制流与半关闭、目标错误分类、私网拒绝、失败目标退避、账本持久化/跨月、滚动预算及正常停止结算；新增监控测试覆盖来源归属、流量、认证失败、错误尝试、HTTP 复用、有界历史、并发快照和敏感值脱敏。Python 测试覆盖打包格式/可执行权限、私有文件权限、配置生成与升级保留。
 
 此次实现的现场版本验证过五个大陆区域、连续网页请求、混入错误目标的并发以及 32 条同时 TCP 连接，并得到用户 Proxifier Checker 通过的反馈。这是当时环境的证据，**不能代表所有账号、目标或网络条件均已验证**。仓库通用安装脚本仍需在自己的目标系统验收。
 
@@ -279,6 +290,8 @@ Go 测试覆盖 TLS 证书透传与连接复用、SOCKS5 认证、二进制流�
 agent.go             入口代理、认证、区域调度、故障分类与退出结算
 node.go              SCF WSS 服务、目标 DNS/TCP 连接和状态确认
 stream.go            字节流封装、分片、速率、半关闭和时长/流量限制
+monitor.go           有界连接记录、认证监控接口、来源与目标归属
+dashboard.html       内嵌的实时连接监控页面
 meter.go             小额滚动预留及持久费用估算
 main.go              同一程序的入口 / 云节点两种模式
 tunnel_test.go       核心回归与并发测试

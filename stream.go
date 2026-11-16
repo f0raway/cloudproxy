@@ -16,6 +16,11 @@ const maxTunnelSeconds = 7200
 const idleSeconds = 120
 
 type wsStream struct {
+	region       string
+	onTraffic    func(int, int)
+	failureMu    sync.Mutex
+	firstFailure error
+	closing      atomic.Bool
 	c            *websocket.Conn
 	reader       io.Reader
 	writeMu      sync.Mutex
@@ -47,13 +52,21 @@ func (s *wsStream) account(n int) error {
 	}
 	return nil
 }
-func (s *wsStream) Read(p []byte) (int, error) {
+func (s *wsStream) Read(p []byte) (n int, err error) {
+	defer func() {
+		if err != nil {
+			s.setFailure(err)
+		}
+	}()
 	for {
 		if s.reader != nil {
 			n, err := s.reader.Read(p)
 			if n > 0 {
 				if e := s.account(n); e != nil {
 					return 0, e
+				}
+				if s.onTraffic != nil {
+					s.onTraffic(0, n)
 				}
 				return n, nil
 			}
@@ -82,7 +95,12 @@ func (s *wsStream) Read(p []byte) (int, error) {
 		s.reader = r
 	}
 }
-func (s *wsStream) Write(p []byte) (int, error) {
+func (s *wsStream) Write(p []byte) (n int, err error) {
+	defer func() {
+		if err != nil {
+			s.setFailure(err)
+		}
+	}()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	total := 0
@@ -103,6 +121,9 @@ func (s *wsStream) Write(p []byte) (int, error) {
 		if err := s.c.WriteMessage(websocket.BinaryMessage, p[:n]); err != nil {
 			return total, err
 		}
+		if s.onTraffic != nil {
+			s.onTraffic(n, 0)
+		}
 		total += n
 		p = p[n:]
 	}
@@ -115,6 +136,7 @@ func (s *wsStream) CloseWrite() error {
 	return s.c.WriteMessage(websocket.TextMessage, []byte("EOF"))
 }
 func (s *wsStream) Close() error {
+	s.closing.Store(true)
 	err := s.c.Close()
 	s.closeOnce.Do(func() {
 		if s.onClose != nil {
@@ -150,11 +172,13 @@ func relay(raw net.Conn, s *wsStream) {
 			case <-done:
 				return
 			case <-timer.C:
+				s.setFailure(errors.New("maximum connection lifetime reached"))
 				raw.Close()
 				s.Close()
 				return
 			case <-tick.C:
 				if time.Since(time.Unix(0, s.lastActivity.Load())) > idleSeconds*time.Second {
+					s.setFailure(errors.New("connection idle timeout"))
 					raw.Close()
 					s.Close()
 					return
@@ -171,6 +195,7 @@ func relay(raw net.Conn, s *wsStream) {
 			}
 		}
 		if err != nil {
+			s.setFailure(err)
 			raw.Close()
 			s.Close()
 		}
@@ -180,4 +205,21 @@ func relay(raw net.Conn, s *wsStream) {
 	go copyOne(raw, s)
 	<-finished
 	<-finished
+}
+
+// Retain the initiating error, not secondary errors caused by closing the socket.
+func (s *wsStream) setFailure(err error) {
+	if err == nil || errors.Is(err, io.EOF) || s.closing.Load() || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return
+	}
+	s.failureMu.Lock()
+	defer s.failureMu.Unlock()
+	if s.firstFailure == nil {
+		s.firstFailure = err
+	}
+}
+func (s *wsStream) failure() error {
+	s.failureMu.Lock()
+	defer s.failureMu.Unlock()
+	return s.firstFailure
 }

@@ -55,7 +55,7 @@ sudo bash ops/install.sh dist/scf-tunnel-linux-amd64 runtime/agent.json
 sudo systemctl status scf-tunnel-proxy --no-pager
 sudo systemctl restart scf-tunnel-proxy
 sudo tail -100 /var/log/scf-tunnel-proxy/service.log
-curl -s http://127.0.0.1:8081/api/stats
+curl --user YOUR_PROXY_USER -s http://127.0.0.1:8081/api/stats
 sudo cat /var/lib/scf-tunnel-proxy/usage.json
 ```
 
@@ -90,3 +90,6 @@ sudo systemctl enable --now scf-tunnel-proxy scf-tunnel-proxy-watchdog.timer
 - 代理入口必须限制网络可达范围。HTTP/SOCKS5 入口认证没有独立传输加密，应由可信内网或 VPN 保护。
 - 需要轮换节点令牌时，计划同步更新入口和所有节点环境，并验证。当前部署工具故意不自动轮换已有令牌。
 - 云账号可另配置费用提醒；本项目没有自动创建账单告警，也不代替腾讯云账单。
+
+
+监控页及状态接口现在要求使用现有代理账号密码登录。升级时同步更新健康检查程序，否则旧请求收到 401 会触发误重启。连接明细、流量口径与记录保留见 [实时连接监控](MONITORING.md)。

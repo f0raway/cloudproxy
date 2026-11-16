@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check only local endpoints; never create billable SCF tunnels."""
+import base64
 import json
 from pathlib import Path
 import socket
@@ -25,7 +26,10 @@ def main():
         config = json.loads(CONFIG.read_text())
         host, port = address(config["dashboard_addr"])
         url_host = "[" + host + "]" if ":" in host else host
-        with urllib.request.urlopen(f"http://{url_host}:{port}/api/stats", timeout=5) as response:
+        request = urllib.request.Request(f"http://{url_host}:{port}/api/stats")
+        credentials = base64.b64encode((config["user"] + ":" + config["password"]).encode()).decode()
+        request.add_header("Authorization", "Basic " + credentials)
+        with urllib.request.urlopen(request, timeout=5) as response:
             stats = json.load(response)
         if not stats.get("nodes") or stats.get("mode") != "tcp-tunnel-no-mitm":
             raise ValueError("invalid local status")

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/armon/go-socks5"
 	"github.com/gorilla/websocket"
 	"io"
 	"log"
@@ -51,6 +50,7 @@ type nodeState struct {
 	TargetFailures uint64
 }
 type provider struct {
+	connections          *connectionLog
 	targetCooldown       map[string]time.Time
 	cachedTargetFailures atomic.Uint64
 	allowPrivate         bool // Only enabled by local tests; never populated from configuration.
@@ -92,7 +92,7 @@ func newProvider(c agentConfig) (*provider, error) {
 		cancel()
 		return nil, fmt.Errorf("max_connections must be between 1 and 64")
 	}
-	p := &provider{token: c.Token, meter: m, slots: make(chan struct{}, limit), live: make(map[*wsStream]struct{}), targetCooldown: make(map[string]time.Time), stopCtx: stopCtx, cancel: cancel}
+	p := &provider{connections: newConnectionLog(c), token: c.Token, meter: m, slots: make(chan struct{}, limit), live: make(map[*wsStream]struct{}), targetCooldown: make(map[string]time.Time), stopCtx: stopCtx, cancel: cancel}
 	for _, n := range c.Nodes {
 		p.nodes = append(p.nodes, &nodeState{nodeConfig: n})
 	}
@@ -125,6 +125,16 @@ func (p *provider) mark(n *nodeState, ok bool) {
 	}
 }
 func (p *provider) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	r := recordFrom(ctx)
+	r.target(address, "queued")
+	conn, err := p.dialTunnel(ctx, network, address)
+	if err != nil {
+		r.finish(err)
+	}
+	return conn, err
+}
+func (p *provider) dialTunnel(ctx context.Context, network, address string) (net.Conn, error) {
+	record := recordFrom(ctx)
 	host, _, splitErr := net.SplitHostPort(address)
 	if splitErr != nil {
 		return nil, splitErr
@@ -185,6 +195,7 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 			log.Printf("tunnel_reject reason=budget target=%q", address)
 			return nil, e
 		}
+		record.attempt(n.Region)
 		finish := charge.finish
 		start := time.Now()
 		headers := http.Header{"X-Tunnel-Token": []string{p.token}, "X-Tunnel-Target": []string{address}, "X-Tunnel-Protocol": []string{"2"}}
@@ -217,7 +228,7 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 			}
 			if response != nil {
 				status = response.StatusCode
-				if response.Body != nil {
+				if response.Body != nil && status != http.StatusSwitchingProtocols {
 					raw, _ := io.ReadAll(io.LimitReader(response.Body, 512))
 					detail = strings.TrimSpace(string(raw))
 					response.Body.Close()
@@ -227,7 +238,8 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 			if err := finish(time.Since(start), 0); err != nil {
 				log.Printf("budget ledger: %v", err)
 			}
-			summary := fmt.Sprintf("status=%d error=%v detail=%s", status, e, detail)
+			summary := p.connections.clean(fmt.Sprintf("status=%d error=%v detail=%s", status, e, detail))
+			record.attemptError(fmt.Errorf("%s", summary))
 			p.mu.Lock()
 			n.LastError = summary
 			if targetFailure {
@@ -256,9 +268,20 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 		p.success.Add(1)
 		p.active.Add(1)
 		stream := newStream(ws)
+		stream.region = n.Region
+		record.connected(n.Region)
+		if record != nil && record.event.Protocol != "HTTP" {
+			stream.onTraffic = record.traffic
+		}
 		stream.onProgress = func(n int64) error { return charge.progress(time.Since(start), n) }
 		stop := make(chan struct{})
 		stream.onClose = func() {
+			if record != nil && record.event.Protocol == "CONNECT" {
+				record.finish(stream.failure())
+			}
+			if record != nil && record.event.Protocol == "SOCKS5" && stream.failure() != nil {
+				record.update(func(e *connectionEvent) { e.Error = p.connections.clean(stream.failure().Error()) })
+			}
 			p.lifeMu.Lock()
 			delete(p.live, stream)
 			p.lifeMu.Unlock()
@@ -282,15 +305,18 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 				case <-stop:
 					return
 				case <-timer.C:
+					stream.setFailure(fmt.Errorf("maximum connection lifetime reached"))
 					stream.Close()
 					return
 				case <-tick.C:
 					if err := charge.progress(time.Since(start), stream.transferred.Load()); err != nil {
+						stream.setFailure(err)
 						log.Printf("tunnel_closed reason=budget region=%s target=%q error=%q", n.Region, address, err)
 						stream.Close()
 						return
 					}
 					if time.Since(time.Unix(0, stream.lastActivity.Load())) > idleSeconds*time.Second {
+						stream.setFailure(fmt.Errorf("connection idle timeout"))
 						stream.Close()
 						return
 					}
@@ -336,6 +362,7 @@ func (p *provider) shutdown() {
 	}
 	p.lifeMu.Unlock()
 	for _, s := range connections {
+		s.setFailure(fmt.Errorf("proxy shutting down"))
 		s.Close()
 	}
 	p.opening.Wait()
@@ -376,7 +403,31 @@ func stripHop(h http.Header) {
 func httpProxy(c agentConfig, p *provider) http.Handler {
 	transport := &http.Transport{DialContext: p.dial, DisableCompression: true, MaxIdleConns: 16, MaxIdleConnsPerHost: 2, IdleConnTimeout: 20 * time.Second, ResponseHeaderTimeout: 45 * time.Second}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		protocol := "HTTP"
+		if r.Method == "CONNECT" {
+			protocol = "CONNECT"
+		}
+		record := p.connections.begin(r.RemoteAddr, protocol)
+		if record == nil {
+			http.Error(w, "Too many pending connections", 503)
+			return
+		}
+		// Store only host:port, never URL paths, queries or credentials.
+		target := r.URL.Hostname()
+		port := r.URL.Port()
+		if port == "" {
+			port = "80"
+		}
+		if r.Method == "CONNECT" {
+			target = r.Host
+		} else if target != "" {
+			target = net.JoinHostPort(target, port)
+		}
+		record.target(target, "negotiating")
+		var result error
+		defer func() { record.finish(result) }()
 		if !authOK(r, c) {
+			result = fmt.Errorf("proxy authentication failed")
 			w.Header().Set("Proxy-Authenticate", `Basic realm="CloudTunnel"`)
 			http.Error(w, "Proxy authentication required", 407)
 			return
@@ -384,43 +435,54 @@ func httpProxy(c agentConfig, p *provider) http.Handler {
 		if r.Method == "CONNECT" {
 			address := r.Host
 			if _, _, e := net.SplitHostPort(address); e != nil {
+				result = fmt.Errorf("CONNECT requires host:port")
 				http.Error(w, "CONNECT requires host:port", 400)
 				return
 			}
-			remote, e := p.dial(r.Context(), "tcp", address)
+			remote, e := p.dial(context.WithValue(r.Context(), connectionContextKey{}, record), "tcp", address)
 			if e != nil {
-				http.Error(w, "Tunnel unavailable: "+e.Error(), 503)
+				http.Error(w, "Tunnel unavailable: "+p.connections.clean(e.Error()), 503)
 				return
 			}
 			raw, rw, e := w.(http.Hijacker).Hijack()
 			if e != nil {
+				result = e
+				remote.(*wsStream).setFailure(e)
 				remote.Close()
 				return
 			}
 			if _, e = rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); e != nil {
 				raw.Close()
+				remote.(*wsStream).setFailure(e)
 				remote.Close()
 				return
 			}
 			if e = rw.Flush(); e != nil {
 				raw.Close()
+				remote.(*wsStream).setFailure(e)
 				remote.Close()
 				return
 			}
 			buffered := &bufferedConn{Conn: raw, reader: rw.Reader}
 			relay(buffered, remote.(*wsStream))
+			result = remote.(*wsStream).failure()
 			return
 		}
 		if r.URL.Scheme != "http" || r.URL.Host == "" {
+			result = fmt.Errorf("invalid proxy request: use absolute HTTP URL or CONNECT")
 			http.Error(w, "Use CONNECT for HTTPS", 400)
 			return
 		}
-		outgoing := r.Clone(r.Context())
+		outgoing := r.Clone(observedHTTPContext(r.Context(), record))
+		if outgoing.Body != nil {
+			outgoing.Body = observedBody{outgoing.Body, record}
+		}
 		outgoing.RequestURI = ""
 		outgoing.Header = r.Header.Clone()
 		stripHop(outgoing.Header)
 		resp, e := transport.RoundTrip(outgoing)
 		if e != nil {
+			result = e
 			http.Error(w, "Proxy upstream unavailable", 502)
 			return
 		}
@@ -431,8 +493,10 @@ func httpProxy(c agentConfig, p *provider) http.Handler {
 				w.Header().Add(k, v)
 			}
 		}
+		record.update(func(e *connectionEvent) { e.HTTPStatus = resp.StatusCode })
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		_, err := io.Copy(observedWriter{w, record}, resp.Body)
+		result = err
 	})
 }
 
@@ -470,10 +534,6 @@ func runAgent(path string) error {
 	if e != nil {
 		return e
 	}
-	socks, e := socks5.New(&socks5.Config{Resolver: remoteResolver{}, Credentials: socks5.StaticCredentials{c.User: c.Password}, Dial: p.dial, Logger: log.New(&limitedSOCKSLog{}, "SOCKS5 ", log.LstdFlags)})
-	if e != nil {
-		return e
-	}
 	errors := make(chan error, 3)
 	listener, e := net.Listen("tcp", c.SOCKS)
 	if e != nil {
@@ -481,20 +541,12 @@ func runAgent(path string) error {
 	}
 	defer listener.Close()
 	defer p.shutdown()
-	go func() { errors <- socks.Serve(listener) }()
+	go func() { errors <- serveObservedSOCKS(listener, c, p) }()
 	go func() {
 		errors <- (&http.Server{Addr: c.HTTP, Handler: httpProxy(c, p), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 64 * 1024}).ListenAndServe()
 	}()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(p.stats())
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>CloudTunnel</title><h2>CloudTunnel 无需CA的TCP代理</h2><p>费用数值包含活跃连接预留费用，并非云账单。</p><pre id="s"></pre><script>async function u(){try{s.textContent=JSON.stringify(await(await fetch('/api/stats')).json(),null,2)}catch(e){s.textContent=e}}u();setInterval(u,3000)</script>`)
-	})
 	go func() {
-		errors <- (&http.Server{Addr: c.Dashboard, Handler: mux, ReadHeaderTimeout: 5 * time.Second}).ListenAndServe()
+		errors <- (&http.Server{Addr: c.Dashboard, Handler: dashboardHandler(c, p), ReadHeaderTimeout: 5 * time.Second}).ListenAndServe()
 	}()
 	log.Printf("TCP tunnel proxy started HTTP=%s SOCKS5=%s regions=%d CA=not-required", c.HTTP, c.SOCKS, len(c.Nodes))
 	signals := make(chan os.Signal, 1)
