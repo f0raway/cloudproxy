@@ -439,9 +439,15 @@ func classifyConnection(e *connectionEvent) {
 	case containsAny(s, "configured allow/deny", "invalid target", "requires host:port", "invalid proxy request", "SOCKS command unsupported"):
 		e.ErrorCategory = "local_policy"
 		e.Diagnosis = "目标范围、端口或请求格式被本地规则拒绝"
+	case e.Target == "" && e.Connected == nil && len(e.Attempts) == 0 && (s == "EOF" || strings.HasSuffix(s, ": EOF") || strings.HasSuffix(s, ": unexpected EOF")):
+		e.ErrorCategory = "client_disconnect"
+		e.Diagnosis = "客户端在提交目标地址前结束握手；未调用云节点"
 	case containsAny(s, "connection reset by peer", "broken pipe", "context canceled") && ((e.Connected == nil && len(e.Attempts) == 0) || strings.Contains(s, "->"+e.Source)):
 		e.ErrorCategory = "client_disconnect"
-		e.Diagnosis = "客户端在目标建连前主动断开"
+		e.Diagnosis = "客户端在目标建连前断开"
+		if e.Connected != nil {
+			e.Diagnosis = "客户端在连接建立后断开"
+		}
 	case containsAny(s, "authentication failed", "Failed to authenticate", "no supported authentication"):
 		e.ErrorCategory = "authentication"
 		e.Diagnosis = "认证失败或认证握手未完成，请检查客户端设置"
@@ -451,6 +457,12 @@ func classifyConnection(e *connectionEvent) {
 	case containsAny(s, "recently failed", "probe in progress", "maximum active", "daily request limit", "no eligible", "capacity reached"):
 		e.ErrorCategory = "local_limit"
 		e.Diagnosis = "本地退避、排队、额度或节点策略限制，并非新的云端连接失败"
+	case containsAny(s, "provider cannot reach target"):
+		e.ErrorCategory = "provider_target"
+		e.Diagnosis = "当前平台无法连接该目标；可能为平台限制或该路径不可达，请查看节点尝试，不能据此判断节点整体故障"
+	case strings.HasPrefix(e.Target, "[") && strings.Contains(s, "network is unreachable") && strings.Contains(s, "target connection failed"):
+		e.ErrorCategory = "target_network"
+		e.Diagnosis = "云节点到此 IPv6 目标没有可用路由；入口节点网络设为 IPv4 不会将目标 IPv6 转成 IPv4"
 	case containsAny(s, "target connection failed"):
 		e.ErrorCategory = "target_connect"
 		e.Diagnosis = "目标 DNS/TCP 建连失败；请核对目标服务与端口"

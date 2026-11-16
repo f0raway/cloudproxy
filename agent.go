@@ -167,6 +167,39 @@ func (p *provider) nextFor(exclude map[*nodeState]bool, address string) *nodeSta
 	return nil
 }
 
+// Report the same exclusions used by nextFor without exposing endpoint URLs.
+func (p *provider) noEligibleReason(address string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	counts := make([]int, 5)
+	cfg := p.config()
+	for _, n := range p.nodes {
+		switch {
+		case n.Disabled:
+			counts[0]++
+		case n.provider() != "cloudflare" && cfg.PaidDisabled:
+			counts[1]++
+		case p.targets.providerBlocked(address, n.provider()):
+			counts[2]++
+		case time.Now().Before(n.RetryAfter):
+			counts[3]++
+		case n.provider() == "cloudflare" && !p.daily.available(n.quotaGroup(), cfg.dailyLimit()):
+			counts[4]++
+		}
+	}
+	labels := []string{"已停用节点", "付费回退被关闭的节点", "对此目标退避的平台节点", "故障冷却节点", "今日额度已用尽的节点"}
+	var reasons []string
+	for i, count := range counts {
+		if count > 0 {
+			reasons = append(reasons, fmt.Sprintf("%s %d 个", labels[i], count))
+		}
+	}
+	if len(reasons) == 0 {
+		return "当前节点选择状态已变化，请重试并查看节点状态"
+	}
+	return strings.Join(reasons, "；")
+}
+
 func (p *provider) mark(n *nodeState, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -465,7 +498,7 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 	if last == nil {
 		p.noNodes.Add(1)
 		p.rejectionLog.Printf("tunnel_reject reason=no_healthy_nodes target=%q", address)
-		last = fmt.Errorf("no eligible tunnel nodes: check enabled nodes, provider capability, daily quota, paid fallback and cooldown")
+		last = fmt.Errorf("no eligible tunnel nodes: %s", p.noEligibleReason(address))
 	}
 	return nil, last
 }
