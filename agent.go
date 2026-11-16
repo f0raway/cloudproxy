@@ -25,6 +25,10 @@ type targetDialError struct{ detail string }
 func (e *targetDialError) Error() string { return "target connection failed: " + e.detail }
 
 type nodeConfig struct {
+	// Deployment metadata emitted by earlier releases; runtime limits and billing
+	// remain controlled by the tunnel protocol and explicit rates.
+	Memory     int        `json:"memory,omitempty"`
+	Timeout    int        `json:"timeout,omitempty"`
 	Provider   string     `json:"provider,omitempty"`
 	Disabled   bool       `json:"disabled,omitempty"`
 	Token      string     `json:"token,omitempty"`

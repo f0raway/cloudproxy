@@ -172,6 +172,13 @@ func TestEffectiveConfigCheckIsReadOnlyAndUsesOverlay(t *testing.T) {
 			t.Fatal("bad config accepted")
 		}
 	}
+	c.Nodes[0].Memory = 128
+	c.Nodes[0].Timeout = 7200
+	raw, _ = json.Marshal(c)
+	os.WriteFile(path, raw, 0600)
+	if _, err = loadAgentConfig(path); err != nil {
+		t.Fatal("legacy deployment metadata rejected", err)
+	}
 	c.SOCKS = c.HTTP
 	raw, _ = json.Marshal(c)
 	os.WriteFile(path, raw, 0600)
