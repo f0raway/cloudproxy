@@ -98,6 +98,20 @@ def register_node(agent_path, endpoint, token, account):
             raise DeploymentError("Worker deployed but registration was not acknowledged")
 
 
+def custom_endpoint(api, account, worker, hostname):
+    hostname = hostname.strip().lower().rstrip(".")
+    labels = hostname.split(".")
+    if len(hostname) > 253 or len(labels) < 2 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels
+    ):
+        raise DeploymentError("custom_domain must be a hostname, without URL scheme, path or port")
+    domains = api.call("GET", "/accounts/" + account + "/workers/domains")
+    matches = [domain for domain in domains if domain.get("hostname", "").lower() == hostname]
+    if len(matches) != 1 or matches[0].get("service") != worker or not matches[0].get("enabled"):
+        raise DeploymentError("custom_domain must already be enabled and bound to this managed Worker in the selected account")
+    return "wss://" + hostname + "/tunnel"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--credentials", default="config/cloudflare.toml")
@@ -126,9 +140,13 @@ def main(argv=None):
     existing = api.call("GET", prefix + "/scripts/" + name + "/settings", missing=True)
     if existing is not None and MANAGED_TAG not in existing.get("tags", []):
         raise DeploymentError("Worker name is already in use by an unmanaged script; choose another worker_name")
-    subdomain = api.call("GET", prefix + "/subdomain", missing=True)
-    if not subdomain or not subdomain.get("subdomain"):
-        subdomain = api.call("PUT", prefix + "/subdomain", {"subdomain": "cloud-tunnel-" + secrets.token_hex(5)})
+    custom = config.get("custom_domain", "")
+    endpoint = custom_endpoint(api, account, name, custom) if custom else None
+    subdomain = None
+    if not custom:
+        subdomain = api.call("GET", prefix + "/subdomain", missing=True)
+        if not subdomain or not subdomain.get("subdomain"):
+            subdomain = api.call("PUT", prefix + "/subdomain", {"subdomain": "cloud-tunnel-" + secrets.token_hex(5)})
     token_path = path.with_name("cloudflare-node-token")
     node_token = token_path.read_text().strip() if token_path.exists() else secrets.token_urlsafe(40)
     if len(node_token) < 24:
@@ -136,8 +154,9 @@ def main(argv=None):
     private_write(token_path, node_token)
     payload, content_type = multipart(directory, node_token)
     api.call("PUT", prefix + "/scripts/" + name, payload, content_type)
-    api.call("POST", prefix + "/scripts/" + name + "/subdomain", {"enabled": True, "previews_enabled": False})
-    endpoint = "wss://" + name + "." + subdomain["subdomain"] + ".workers.dev/tunnel"
+    if not custom:
+        api.call("POST", prefix + "/scripts/" + name + "/subdomain", {"enabled": True, "previews_enabled": False})
+        endpoint = "wss://" + name + "." + subdomain["subdomain"] + ".workers.dev/tunnel"
     if not args.no_register:
         register_node(args.agent_config, endpoint, node_token, account)
     private_write(path.with_name("cloudflare-node.json"), json.dumps({"url": endpoint, "token": node_token,

@@ -31,5 +31,31 @@ class CloudflareTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(path.read_text(), "dummy")
 
+
+class CustomDomainTests(unittest.TestCase):
+    def test_uses_bound_domain_without_modifying_dns(self):
+        class FakeAPI:
+            def __init__(self): self.calls = []
+            def call(self, method, path):
+                self.calls.append((method, path))
+                return [{"hostname":"proxy.example.com", "service":"managed-worker", "enabled":True}]
+        api = FakeAPI()
+        endpoint = cloudflare.custom_endpoint(api, "account", "managed-worker", "Proxy.Example.COM.")
+        self.assertEqual(endpoint, "wss://proxy.example.com/tunnel")
+        self.assertEqual(api.calls, [("GET", "/accounts/account/workers/domains")])
+
+    def test_refuses_wrong_worker_disabled_or_unbound_domain(self):
+        for records in ([], [{"hostname":"proxy.example.com","service":"other","enabled":True}],
+                        [{"hostname":"proxy.example.com","service":"managed-worker","enabled":False}]):
+            class FakeAPI:
+                def call(self, method, path): return records
+            with self.assertRaises(cloudflare.DeploymentError):
+                cloudflare.custom_endpoint(FakeAPI(), "account", "managed-worker", "proxy.example.com")
+
+    def test_rejects_urls_paths_ports_and_invalid_hostnames(self):
+        for value in ("https://proxy.example.com", "proxy.example.com:443", "proxy.example.com/tunnel", "user@proxy.example.com", "-bad.example.com", "localhost"):
+            with self.assertRaises(cloudflare.DeploymentError):
+                cloudflare.custom_endpoint(None, "account", "managed-worker", value)
+
 if __name__ == "__main__":
     unittest.main()

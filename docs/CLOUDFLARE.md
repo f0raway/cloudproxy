@@ -53,3 +53,14 @@ python3 deploy/cloudflare.py --credentials /path/to/private/cloudflare.toml \
 部署 API 成功只说明代码上传成功，不能证明入口能访问 workers.dev。有些网络中，该域名会解析失败或 TLS 被重置；不要关闭证书校验来处理。可使用账号已有的自有域名，并在 Cloudflare 绑定至该 Worker，随后将入口节点 URL 改为对应的 `wss://子域名/tunnel`。绑定域名需要对应 Zone 的路由权限；它不同于账号的 `某名称.workers.dev` 子域名。验证前保持节点停用，腾讯云节点继续提供转发。
 
 其他平台尚未确定时不要自动购买资源。仓库另提供通用 `workers/Dockerfile`：支持 WebSocket 透传、长连接与公网 TCP 出站的容器平台可运行 Go 节点；环境变量 `CLOUD_PROXY_TOKEN` 必须设置，`PORT` 默认 9000。不同平台的请求超时、并发、出网、费用与协议支持需单独核验，不能把普通函数 URL 直接视为兼容代理节点。
+
+
+## 保留自有域名
+
+域名在 Cloudflare 绑定到本工具管理的 Worker 并启用后，可在私有凭据 TOML 的 `[cloudflare]` 中添加：
+
+```toml
+custom_domain = "proxy.example.com"
+```
+
+部署工具会核对该域名是否已启用并归属于同一账号、同一 Worker。此时重新部署和注册继续使用 `wss://proxy.example.com/tunnel`，不会改回 workers.dev，也不会创建或覆盖其他域名绑定。这个字段不能代替 Cloudflare 上的域名绑定步骤；新绑定需要相应域名的 Workers 路由权限。绑定前应确认子域名未被其他网站或 DNS 记录占用，绑定后仍需验证 DNS、证书、WebSocket 及目标 TCP。
