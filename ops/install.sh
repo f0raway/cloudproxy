@@ -39,7 +39,7 @@ install -d -m 700 -o scftunnel -g scftunnel /var/lib/scf-tunnel-proxy
 # Save only existing service files; backup archives remain root-only.
 BACKUP_FILE="/var/backups/scf-tunnel-proxy-$(date -u +%Y%m%dT%H%M%SZ)-$$.tar.gz"
 if [[ -f /etc/scf-tunnel-proxy/agent.json ]]; then
-  (umask 077; tar -czf "$BACKUP_FILE" /etc/scf-tunnel-proxy /var/lib/scf-tunnel-proxy /opt/scf-tunnel-proxy)
+  (umask 077; tar -czf "$BACKUP_FILE" /etc/scf-tunnel-proxy /var/lib/scf-tunnel-proxy /opt/scf-tunnel-proxy /var/log/scf-tunnel-proxy)
 fi
 install -m 755 "$BINARY" /opt/scf-tunnel-proxy/.binary-new
 install -o root -g scftunnel -m 640 "$AGENT_CONFIG" /etc/scf-tunnel-proxy/.config-new
@@ -72,19 +72,12 @@ AccuracySec=15s
 [Install]
 WantedBy=timers.target
 TIMER
-cat > /etc/logrotate.d/scf-tunnel-proxy <<'LOGROTATE'
-/var/log/scf-tunnel-proxy/service.log {
-    daily
-    maxsize 5M
-    rotate 5
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-    su root root
-}
-LOGROTATE
+# Existing log files were included in the root-only upgrade archive above.
+if [[ -f "$BACKUP_FILE" ]]; then
+  rm -f -- /var/log/scf-tunnel-proxy/service.log /var/log/scf-tunnel-proxy/service.log.[0-9]*
+fi
+rm -f -- /etc/logrotate.d/scf-tunnel-proxy
+
 systemctl daemon-reload
 systemctl enable --now scf-tunnel-proxy
 systemctl enable --now scf-tunnel-proxy-watchdog.timer

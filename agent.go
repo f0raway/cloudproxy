@@ -35,6 +35,8 @@ type nodeConfig struct {
 	URL        string     `json:"url"`
 }
 type agentConfig struct {
+	Logging        *logConfig   `json:"logging,omitempty"`
+	NodeNetwork    string       `json:"node_network,omitempty"`
 	SettingsPath   string       `json:"settings_path,omitempty"`
 	TargetAllow    []string     `json:"target_allow,omitempty"`
 	TargetDeny     []string     `json:"target_deny,omitempty"`
@@ -63,6 +65,7 @@ type nodeState struct {
 	TargetFailures uint64
 }
 type provider struct {
+	logs                 *runtimeLogs
 	configValue          atomic.Pointer[agentConfig]
 	settingsMu           sync.Mutex
 	csrf                 string
@@ -188,6 +191,9 @@ func (p *provider) dial(ctx context.Context, network, address string) (net.Conn,
 	return conn, err
 }
 func (p *provider) dialTunnel(ctx context.Context, network, address string) (connection net.Conn, result error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var normalizeErr error
 	address, normalizeErr = normalizeTarget(address)
 	if normalizeErr != nil {
@@ -280,7 +286,15 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			nodeToken = p.token
 		}
 		headers := http.Header{"X-Tunnel-Token": []string{nodeToken}, "X-Tunnel-Target": []string{address}, "X-Tunnel-Protocol": []string{"2"}}
-		dialer := websocket.Dialer{HandshakeTimeout: 25 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Proxy: nil, NetDialContext: (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
+		dialer := websocket.Dialer{HandshakeTimeout: 25 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Proxy: nil, NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			switch p.config().NodeNetwork {
+			case "ipv4":
+				network = "tcp4"
+			case "ipv6":
+				network = "tcp6"
+			}
+			return (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
+		}}
 		ws, response, e := dialer.DialContext(ctx, n.URL, headers)
 		if e == nil {
 			ws.SetReadLimit(2048)
@@ -334,7 +348,7 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			}
 			p.mu.Unlock()
 			log.Printf("tunnel_open_failed region=%s target=%q status=%d target_failure=%t duration=%s error=%q detail=%q", n.Region, address, status, targetFailure, time.Since(start).Round(time.Millisecond), e.Error(), detail)
-			if !targetFailure && !unsupported {
+			if !targetFailure && !unsupported && ctx.Err() == nil {
 				p.mark(n, false)
 			}
 			if targetFailure {
@@ -343,6 +357,12 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 				last = fmt.Errorf("%s: HTTP %d: %w", n.Region, status, e)
 			}
 			p.failed.Add(1)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if n.provider() == "cloudflare" && !unsupported {
+				p.targets.providerFailed(address, n.provider())
+			}
 			if unsupported {
 				p.targets.skipProvider(address, n.provider())
 				p.mu.Lock()
@@ -357,7 +377,6 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			// second regional attempt; subsequent probes recover via exponential backoff.
 			if targetFailure {
 				if n.provider() == "cloudflare" && !p.config().PaidDisabled {
-					p.targets.skipProviderFor(address, n.provider(), 30*time.Second)
 					p.mu.Lock()
 					for _, candidate := range p.nodes {
 						if candidate.provider() == "cloudflare" {
@@ -378,6 +397,7 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			finish(time.Since(start), 0)
 			return nil, fmt.Errorf("proxy is stopping")
 		}
+		p.targets.providerSucceeded(address, n.provider())
 		p.mark(n, true)
 		p.success.Add(1)
 		p.active.Add(1)
@@ -463,6 +483,7 @@ func (p *provider) shutdown() {
 		s.Close()
 	}
 	p.opening.Wait()
+	p.connections.finishActive(fmt.Errorf("proxy shutting down"))
 	log.Printf("proxy_shutdown active=%d ledger_settled=true", p.active.Load())
 }
 
@@ -483,7 +504,7 @@ func (p *provider) stats() map[string]any {
 		}
 		nodes = append(nodes, map[string]any{"region": n.Region, "provider": n.provider(), "disabled": n.Disabled, "status": status, "failure_count": n.Failures, "connections": n.Opens, "target_failures": n.TargetFailures, "last_error": n.LastError})
 	}
-	return map[string]any{"mode": "tcp-tunnel-no-mitm", "nodes": nodes, "active": p.active.Load(), "opening_or_active": len(p.slots), "max_connections": cap(p.slots), "success": p.success.Load(), "failed": p.failed.Load(), "rejected_limit": p.rejectedLimit.Load(), "rejected_private": p.rejectedPrivate.Load(), "cached_target_failures": p.cachedTargetFailures.Load(), "cooling_targets": p.targets.cooling(), "target_retry_policy": "single-probe; target failure backoff 30s to 10m; node failure retries up to 2 regions", "rejected_budget": p.rejectedBudget.Load(), "rejected_no_nodes": p.noNodes.Load(), "cost_estimate": p.meter.snapshot(), "cost_breakdown": p.meter.breakdown(), "cloud_bill": readCloudBill(p.billingCache), "monthly_limit_yuan": p.config().Budget, "cloudflare_daily_limit": p.config().dailyLimit(), "provider_daily_usage": p.daily.snapshot(), "routing_strategy": p.config().Strategy, "paid_fallback_disabled": p.config().PaidDisabled, "max_connection_seconds": maxTunnelSeconds, "max_connection_bytes": maxTunnelBytes}
+	return map[string]any{"mode": "tcp-tunnel-no-mitm", "nodes": nodes, "active": p.active.Load(), "opening_or_active": len(p.slots), "max_connections": cap(p.slots), "success": p.success.Load(), "failed": p.failed.Load(), "rejected_limit": p.rejectedLimit.Load(), "rejected_private": p.rejectedPrivate.Load(), "cached_target_failures": p.cachedTargetFailures.Load(), "cooling_targets": p.targets.cooling(), "target_retry_policy": "single-probe; target failure backoff 30s to 10m; node failure retries up to 2 regions", "rejected_budget": p.rejectedBudget.Load(), "rejected_no_nodes": p.noNodes.Load(), "logging": p.loggingStatus(), "node_network": p.config().NodeNetwork, "cost_estimate": p.meter.snapshot(), "cost_breakdown": p.meter.breakdown(), "cloud_bill": readCloudBill(p.billingCache), "monthly_limit_yuan": p.config().Budget, "cloudflare_daily_limit": p.config().dailyLimit(), "provider_daily_usage": p.daily.snapshot(), "routing_strategy": p.config().Strategy, "paid_fallback_disabled": p.config().PaidDisabled, "max_connection_seconds": maxTunnelSeconds, "max_connection_bytes": maxTunnelBytes}
 }
 func authOK(r *http.Request, c agentConfig) bool {
 	parts := strings.SplitN(r.Header.Get("Proxy-Authorization"), " ", 2)
@@ -642,13 +663,18 @@ func runAgent(path string) error {
 	if e != nil {
 		return e
 	}
+	logs, logErr := startRuntimeLogs(c, p)
+	if logErr != nil {
+		p.shutdown()
+		return fmt.Errorf("cannot initialize bounded logs: %w", logErr)
+	}
+	defer func() { p.shutdown(); logs.Close() }()
 	errors := make(chan error, 3)
 	listener, e := net.Listen("tcp", c.SOCKS)
 	if e != nil {
 		return e
 	}
 	defer listener.Close()
-	defer p.shutdown()
 	go func() { errors <- serveObservedSOCKS(listener, c, p) }()
 	go func() {
 		errors <- (&http.Server{Addr: c.HTTP, Handler: httpProxy(c, p), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 64 * 1024}).ListenAndServe()
@@ -680,7 +706,7 @@ func (w *limitedSOCKSLog) Write(b []byte) (int, error) {
 	defer w.mu.Unlock()
 	if time.Since(w.start) > time.Minute {
 		if w.suppressed > 0 {
-			fmt.Fprintf(os.Stderr, "proxy repeated_errors_suppressed=%d in_previous_minute\n", w.suppressed)
+			fmt.Fprintf(log.Writer(), "proxy repeated_errors_suppressed=%d in_previous_minute\n", w.suppressed)
 		}
 		w.start = time.Now()
 		w.count = 0
@@ -691,5 +717,5 @@ func (w *limitedSOCKSLog) Write(b []byte) (int, error) {
 		w.suppressed++
 		return len(b), nil
 	}
-	return os.Stderr.Write(b)
+	return log.Writer().Write(b)
 }

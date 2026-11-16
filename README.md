@@ -265,7 +265,7 @@ Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平
 
 ```bash
 curl --user YOUR_PROXY_USER -s http://127.0.0.1:8081/api/stats
-sudo tail -100 /var/log/scf-tunnel-proxy/service.log
+sudo tail -100 /var/lib/scf-tunnel-proxy/service.log
 sudo systemctl status scf-tunnel-proxy --no-pager
 ```
 
@@ -277,7 +277,7 @@ sudo systemctl status scf-tunnel-proxy --no-pager
 - **逐条状态**：握手/认证、等待、连接中、TCP 已连接、已结束、失败；显示持续时间和双向流量。
 - **错误详情**：认证失败、目标不可达、预算/并发/私网拒绝、传输错误和超时；点击行展开区域尝试及失败原因。
 - **筛选与排查**：来源/目标/错误搜索、协议与状态筛选、暂停刷新；接口中断时明确标记旧数据。
-- **历史记录**：内存保留最近 1,000 条结束记录，活跃记录单独保留；重启清空。单页显示筛选后的前 200 条。
+- **历史记录**：内存保留最近 1,000 条结束记录，活跃记录单独保留；开启本地连接日志后，重启可从保留文件恢复近期结束记录。单页显示筛选后的前 200 条。
 
 页面及两个接口均使用**现有代理账号和密码**进行 HTTP Basic 登录。上面的 curl 会提示输入密码；不要把密码直接写入命令历史。默认只监听回环地址，推荐通过 SSH 隧道访问。升级时请同时更新 `ops/watchdog.py`，旧版无认证的健康检查会收到 401。
 
@@ -290,6 +290,8 @@ ssh -L 18081:127.0.0.1:8081 your-user@your-server
 ```
 
 随后访问 `http://127.0.0.1:18081`，使用代理账号密码登录。[错误码与排查步骤](docs/TROUBLESHOOTING.md)
+
+连接日志与运行日志各自按文件大小轮转（默认 5 MiB × 3，两类合计约 30 MiB），配置页可调整。页面将本地拒绝/退避、客户端认证/断开与目标/节点错误分别统计，避免把 Fake-IP 拒绝率当成系统故障率。日志失败或队列丢弃会显示计数。服务器到云节点还可选自动、仅 IPv4、仅 IPv6；这不会改变客户端目标范围。[日志与诊断说明](docs/LOGGING.md)
 
 ## 开发与验证
 

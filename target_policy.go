@@ -63,6 +63,8 @@ func normalizeTarget(address string) (string, error) {
 }
 
 type targetState struct {
+	providerFailures                   map[string]int
+	providerFailedAt                   map[string]time.Time
 	providerRetry                      map[string]time.Time
 	failures                           int
 	retryUntil, healthyUntil, lastUsed time.Time
@@ -204,4 +206,45 @@ func (t *targetPolicy) providerBlocked(address, provider string) bool {
 	defer t.mu.Unlock()
 	s := t.states[address]
 	return s != nil && t.now().Before(s.providerRetry[provider])
+}
+
+func (t *targetPolicy) providerFailed(address, provider string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.states[address]
+	if s == nil {
+		return
+	}
+	now := t.now()
+	if s.providerRetry == nil {
+		s.providerRetry = make(map[string]time.Time)
+	}
+	if s.providerFailures == nil {
+		s.providerFailures = make(map[string]int)
+		s.providerFailedAt = make(map[string]time.Time)
+	}
+	if now.Sub(s.providerFailedAt[provider]) > 30*time.Minute {
+		s.providerFailures[provider] = 0
+	}
+	s.providerFailures[provider]++
+	s.providerFailedAt[provider] = now
+	delay := 30 * time.Second
+	for i := 1; i < s.providerFailures[provider] && delay < 10*time.Minute; i++ {
+		delay *= 2
+	}
+	if delay > 10*time.Minute {
+		delay = 10 * time.Minute
+	}
+	s.providerRetry[provider] = now.Add(delay)
+}
+func (t *targetPolicy) providerSucceeded(address, provider string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.states[address]
+	if s == nil {
+		return
+	}
+	delete(s.providerRetry, provider)
+	delete(s.providerFailures, provider)
+	delete(s.providerFailedAt, provider)
 }

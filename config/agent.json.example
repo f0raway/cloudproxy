@@ -19,5 +19,11 @@
   "cloudflare_daily_limit": 90000,
   "target_allow": [],
   "target_deny": [],
-  "target_ports": []
+  "target_ports": [],
+  "logging": {
+    "enabled": true,
+    "max_file_mb": 5,
+    "backups": 2
+  },
+  "node_network": "auto"
 }

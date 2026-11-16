@@ -13,6 +13,7 @@
 *.crt
 *.ppx
 *.log
+*.jsonl
 *.tar.gz
 *.zip
 # Build and tooling output

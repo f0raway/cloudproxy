@@ -7,7 +7,8 @@
 | `/opt/scf-tunnel-proxy/scf-tunnel` | 当前入口程序 |
 | `/etc/scf-tunnel-proxy/agent.json` | 代理认证、节点令牌、节点清单 |
 | `/var/lib/scf-tunnel-proxy/usage.json` | 费用估算账本，重启/升级时必须保留 |
-| `/var/log/scf-tunnel-proxy/service.log` | 连接元数据、错误和启动日志 |
+| `/var/lib/scf-tunnel-proxy/service.log` | 有大小上限的运行日志 |
+| `/var/lib/scf-tunnel-proxy/connections.jsonl` | 有大小上限的连接结构化日志与恢复来源 |
 | `/etc/systemd/system/scf-tunnel-proxy.service` | 主服务 |
 | `/etc/systemd/system/scf-tunnel-proxy-watchdog.timer` | 每两分钟本地检查 |
 
@@ -54,7 +55,7 @@ sudo bash ops/install.sh dist/scf-tunnel-linux-amd64 runtime/agent.json
 ```bash
 sudo systemctl status scf-tunnel-proxy --no-pager
 sudo systemctl restart scf-tunnel-proxy
-sudo tail -100 /var/log/scf-tunnel-proxy/service.log
+sudo tail -100 /var/lib/scf-tunnel-proxy/service.log
 curl --user YOUR_PROXY_USER -s http://127.0.0.1:8081/api/stats
 sudo cat /var/lib/scf-tunnel-proxy/usage.json
 ```
@@ -73,7 +74,11 @@ sudo systemctl enable --now scf-tunnel-proxy scf-tunnel-proxy-watchdog.timer
 
 本地检查每两分钟访问回环面板并检查入口端口，连续两次异常才重启。不通过云端访问第三方网站，因此不会周期性创建收费隧道；它也不能证明某个目标站点可达。
 
-日志由系统 logrotate 检查和轮转，配置为 `daily/maxsize 5M/rotate 5`；`maxsize` 只在 logrotate 实际执行时判断，**不代表日志实时硬上限 5M**。重复 SOCKS 错误每分钟采样并汇总，以降低日志洪泛。
+程序在写入前检查文件大小并自动轮转。运行日志 `service.log` 与连接日志 `connections.jsonl` 各默认最多 5 MiB、2 份旧文件，两类日志合计最多约 30 MiB；旧文件编号为 `.1`、`.2`。权限为 600，目录限服务用户访问。配置页“日志与节点网络”可设置 1–100 MiB、0–5 份备份，并开关连接日志。下调上限时按完整行保留文件尾部，使已保留文件也符合新上限。
+
+连接日志通过容量 512 的异步队列写入，避免慢磁盘阻塞转发；若丢弃记录或写入失败，监控页显示计数。已建立与已结束各记录一次，含来源、目标、时间、区域、流量、尝试和分类错误；不保存请求路径、正文、认证头或密码/节点令牌。内存保留最近 1,000 条结束记录，重启时从仍保留的文件恢复。进程崩溃、断电或队列积压时可能缺记录；没有结束事件不能推断会话一直活跃。
+
+重复 SOCKS 错误每分钟采样并汇总；启动前及致命启动错误由 systemd journal 保管。通用安装器升级时先把旧日志放入 root 专属备份，再清理旧 `/var/log` 日志并切换，避免继续依赖每天一次的 logrotate。详情见 [日志与诊断](LOGGING.md)。
 
 ## 备份与恢复
 

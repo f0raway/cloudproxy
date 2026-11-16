@@ -24,8 +24,8 @@ MemoryHigh=256M
 MemoryMax=512M
 TasksMax=128
 LimitNOFILE=8192
-StandardOutput=append:/var/log/scf-tunnel-proxy/service.log
-StandardError=append:/var/log/scf-tunnel-proxy/service.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

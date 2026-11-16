@@ -18,6 +18,8 @@ import (
 )
 
 type runtimeSettings struct {
+	Logging      *logConfig   `json:"logging,omitempty"`
+	NodeNetwork  string       `json:"node_network,omitempty"`
 	User         string       `json:"user"`
 	Password     string       `json:"password,omitempty"`
 	Budget       float64      `json:"monthly_limit_yuan"`
@@ -43,9 +45,20 @@ func (c agentConfig) dailyLimit() int {
 	return *c.CFDaily
 }
 func settingsFrom(c agentConfig) runtimeSettings {
-	return runtimeSettings{User: c.User, Password: c.Password, Budget: c.Budget, Allow: c.TargetAllow, Deny: c.TargetDeny, Ports: c.TargetPorts, Strategy: c.Strategy, PaidDisabled: c.PaidDisabled, CFDaily: c.dailyLimit(), Nodes: c.Nodes}
+	options := c.logOptions()
+	network := c.NodeNetwork
+	if network == "" {
+		network = "auto"
+	}
+	return runtimeSettings{Logging: &options, NodeNetwork: network, User: c.User, Password: c.Password, Budget: c.Budget, Allow: c.TargetAllow, Deny: c.TargetDeny, Ports: c.TargetPorts, Strategy: c.Strategy, PaidDisabled: c.PaidDisabled, CFDaily: c.dailyLimit(), Nodes: c.Nodes}
 }
 func applySettings(c agentConfig, s runtimeSettings) agentConfig {
+	if s.Logging != nil {
+		c.Logging = s.Logging
+	}
+	if s.NodeNetwork != "" {
+		c.NodeNetwork = s.NodeNetwork
+	}
 	c.User = s.User
 	c.Password = s.Password
 	c.Budget = s.Budget
@@ -76,6 +89,12 @@ func readSettings(c agentConfig) (agentConfig, error) {
 	return applySettings(c, s), nil
 }
 func validateSettings(s runtimeSettings) error {
+	if s.Logging != nil && !validLogConfig(*s.Logging) {
+		return fmt.Errorf("日志单文件上限需为 1–100 MB，保留旧文件数需为 0–5")
+	}
+	if s.NodeNetwork != "" && s.NodeNetwork != "auto" && s.NodeNetwork != "ipv4" && s.NodeNetwork != "ipv6" {
+		return fmt.Errorf("节点网络应为自动、IPv4 或 IPv6")
+	}
 	if strings.TrimSpace(s.User) == "" || len(s.User) > 128 || strings.ContainsAny(s.User, ":\r\n") || len(s.Password) < 8 || len(s.Password) > 255 {
 		return fmt.Errorf("账号不能为空且不能含冒号；密码需为 8–255 字节")
 	}
@@ -246,6 +265,11 @@ func (p *provider) saveSettings(s runtimeSettings) error {
 	p.meter.mu.Unlock()
 	p.connections.addSecrets(next)
 	p.configValue.Store(&next)
+	if p.logs != nil {
+		if err := p.logs.configure(next.logOptions()); err != nil {
+			return fmt.Errorf("配置已保存，但日志参数应用失败：%v", err)
+		}
+	}
 	return nil
 }
 func (p *provider) settingsHandler(w http.ResponseWriter, r *http.Request) {

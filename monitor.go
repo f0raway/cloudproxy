@@ -22,20 +22,22 @@ import (
 const historyLimit = 1000
 
 type connectionEvent struct {
-	ID         uint64              `json:"id"`
-	Source     string              `json:"source"`
-	Target     string              `json:"target"`
-	Protocol   string              `json:"protocol"`
-	State      string              `json:"state"`
-	Region     string              `json:"region"`
-	Started    time.Time           `json:"started"`
-	Connected  *time.Time          `json:"connected,omitempty"`
-	Ended      *time.Time          `json:"ended,omitempty"`
-	Uploaded   int64               `json:"uploaded"`
-	Downloaded int64               `json:"downloaded"`
-	Error      string              `json:"error,omitempty"`
-	HTTPStatus int                 `json:"http_status,omitempty"`
-	Attempts   []connectionAttempt `json:"attempts"`
+	ErrorCategory string              `json:"error_category,omitempty"`
+	Diagnosis     string              `json:"diagnosis,omitempty"`
+	ID            uint64              `json:"id"`
+	Source        string              `json:"source"`
+	Target        string              `json:"target"`
+	Protocol      string              `json:"protocol"`
+	State         string              `json:"state"`
+	Region        string              `json:"region"`
+	Started       time.Time           `json:"started"`
+	Connected     *time.Time          `json:"connected,omitempty"`
+	Ended         *time.Time          `json:"ended,omitempty"`
+	Uploaded      int64               `json:"uploaded"`
+	Downloaded    int64               `json:"downloaded"`
+	Error         string              `json:"error,omitempty"`
+	HTTPStatus    int                 `json:"http_status,omitempty"`
+	Attempts      []connectionAttempt `json:"attempts"`
 }
 type connectionAttempt struct {
 	Region  string    `json:"region"`
@@ -43,6 +45,7 @@ type connectionAttempt struct {
 	Error   string    `json:"error,omitempty"`
 }
 type connectionLog struct {
+	sink      *eventSink
 	secretsMu sync.RWMutex
 	mu        sync.Mutex
 	next      uint64
@@ -64,7 +67,7 @@ func newConnectionLog(c agentConfig) *connectionLog {
 	}
 	return &connectionLog{active: make(map[uint64]*connectionEvent), secrets: secrets}
 }
-func (l *connectionLog) clean(s string) string {
+func (l *connectionLog) redact(s string) string {
 	l.secretsMu.RLock()
 	defer l.secretsMu.RUnlock()
 	for _, secret := range l.secrets {
@@ -72,6 +75,10 @@ func (l *connectionLog) clean(s string) string {
 			s = strings.ReplaceAll(s, secret, "[redacted]")
 		}
 	}
+	return s
+}
+func (l *connectionLog) clean(s string) string {
+	s = l.redact(s)
 	if len(s) > 1024 {
 		s = s[:1024] + "…"
 	}
@@ -127,9 +134,13 @@ func (r *connectionRecord) attemptError(err error) {
 func (r *connectionRecord) connected(region string) {
 	r.update(func(e *connectionEvent) {
 		t := time.Now()
+		already := e.Connected != nil
 		e.Connected = &t
 		e.Region = r.log.clean(region)
 		e.State = "connected"
+		if !already {
+			r.log.sink.record("connection.connected", *e)
+		}
 	})
 }
 func (r *connectionRecord) traffic(up, down int) {
@@ -155,6 +166,8 @@ func (r *connectionRecord) finish(err error) {
 		e.State = "failed"
 		e.Error = l.clean(err.Error())
 	}
+	classifyConnection(e)
+	l.sink.record("connection.end", *e)
 	delete(l.active, e.ID)
 	if len(l.recent) == historyLimit {
 		copy(l.recent, l.recent[1:])
