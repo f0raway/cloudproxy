@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
@@ -63,8 +62,11 @@ type nodeState struct {
 	Opens          uint64
 	LastError      string
 	TargetFailures uint64
+	LastSuccess    time.Time
+	LastFailure    time.Time
 }
 type provider struct {
+	started              time.Time
 	logs                 *runtimeLogs
 	configValue          atomic.Pointer[agentConfig]
 	settingsMu           sync.Mutex
@@ -98,8 +100,11 @@ type provider struct {
 }
 
 func newProvider(c agentConfig) (*provider, error) {
-	if len(c.Nodes) == 0 || c.Token == "" {
-		return nil, fmt.Errorf("missing authenticated nodes")
+	if len(c.Nodes) == 0 {
+		return nil, fmt.Errorf("missing tunnel nodes")
+	}
+	if err := validateNodeTokens(c); err != nil {
+		return nil, err
 	}
 	m, e := openMeter(c.Ledger, c.Budget)
 	if e != nil {
@@ -122,7 +127,7 @@ func newProvider(c agentConfig) (*provider, error) {
 	if c.Strategy == "" {
 		c.Strategy = "free_first"
 	}
-	p := &provider{daily: quota, csrf: newCSRF(), billingCache: c.BillingCache, rejectionLog: log.New(&limitedSOCKSLog{}, "proxy_reject ", log.LstdFlags), connections: newConnectionLog(c), token: c.Token, meter: m, slots: make(chan struct{}, limit), live: make(map[*wsStream]struct{}), targets: newTargetPolicy(), stopCtx: stopCtx, cancel: cancel}
+	p := &provider{started: time.Now(), daily: quota, csrf: newCSRF(), billingCache: c.BillingCache, rejectionLog: log.New(&limitedSOCKSLog{}, "proxy_reject ", log.LstdFlags), connections: newConnectionLog(c), token: c.Token, meter: m, slots: make(chan struct{}, limit), live: make(map[*wsStream]struct{}), targets: newTargetPolicy(), stopCtx: stopCtx, cancel: cancel}
 	p.configValue.Store(&c)
 	for _, n := range c.Nodes {
 		if !n.rates().valid() || (n.provider() == "custom" && n.Rates == nil) {
@@ -150,11 +155,11 @@ func (p *provider) nextFor(exclude map[*nodeState]bool, address string) *nodeSta
 		for i := 0; i < len(p.nodes); i++ {
 			index := (p.index + i) % len(p.nodes)
 			n := p.nodes[index]
-			free := n.provider() == "cloudflare"
-			if p.targets.providerBlocked(address, n.provider()) || n.Disabled || exclude[n] || time.Now().Before(n.RetryAfter) || (!free && cfg.PaidDisabled) {
+			free := n.isFree()
+			if p.targets.providerBlocked(address, n.failureScope()) || n.Disabled || exclude[n] || time.Now().Before(n.RetryAfter) || (!free && cfg.PaidDisabled) {
 				continue
 			}
-			if free && !p.daily.available(n.quotaGroup(), cfg.dailyLimit()) {
+			if n.provider() == "cloudflare" && !p.daily.available(n.quotaGroup(), cfg.dailyLimit()) {
 				continue
 			}
 			if phases == 2 && ((phase == 0 && !free) || (phase == 1 && free)) {
@@ -177,9 +182,9 @@ func (p *provider) noEligibleReason(address string) string {
 		switch {
 		case n.Disabled:
 			counts[0]++
-		case n.provider() != "cloudflare" && cfg.PaidDisabled:
+		case !n.isFree() && cfg.PaidDisabled:
 			counts[1]++
-		case p.targets.providerBlocked(address, n.provider()):
+		case p.targets.providerBlocked(address, n.failureScope()):
 			counts[2]++
 		case time.Now().Before(n.RetryAfter):
 			counts[3]++
@@ -207,8 +212,11 @@ func (p *provider) mark(n *nodeState, ok bool) {
 		n.Failures = 0
 		n.RetryAfter = time.Time{}
 		n.Opens++
+		n.LastSuccess = time.Now()
+		n.LastError = ""
 	} else {
 		n.Failures++
+		n.LastFailure = time.Now()
 		if n.Failures >= 3 {
 			n.RetryAfter = time.Now().Add(30 * time.Second)
 		}
@@ -333,7 +341,9 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			ws.SetReadLimit(2048)
 			ws.SetReadDeadline(time.Now().Add(15 * time.Second))
 			var ack dialAck
+			stopAck := context.AfterFunc(ctx, func() { ws.Close() })
 			e = ws.ReadJSON(&ack)
+			stopAck()
 			ws.SetReadDeadline(time.Time{})
 			if e == nil && !ack.OK {
 				if ack.Error == "unsupported" {
@@ -393,14 +403,14 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			if n.provider() == "cloudflare" && !unsupported {
-				p.targets.providerFailed(address, n.provider())
+			if n.isFree() && targetFailure {
+				p.targets.providerFailed(address, n.failureScope())
 			}
 			if unsupported {
-				p.targets.skipProvider(address, n.provider())
+				p.targets.skipProvider(address, n.failureScope())
 				p.mu.Lock()
 				for _, candidate := range p.nodes {
-					if candidate.provider() == n.provider() {
+					if candidate.failureScope() == n.failureScope() {
 						tried[candidate] = true
 					}
 				}
@@ -409,10 +419,10 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			// The cloud node is healthy but the destination failed. Do not pay for a
 			// second regional attempt; subsequent probes recover via exponential backoff.
 			if targetFailure {
-				if n.provider() == "cloudflare" && !p.config().PaidDisabled {
+				if n.isFree() {
 					p.mu.Lock()
 					for _, candidate := range p.nodes {
-						if candidate.provider() == "cloudflare" {
+						if candidate.failureScope() == n.failureScope() {
 							tried[candidate] = true
 						}
 					}
@@ -430,7 +440,7 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			finish(time.Since(start), 0)
 			return nil, fmt.Errorf("proxy is stopping")
 		}
-		p.targets.providerSucceeded(address, n.provider())
+		p.targets.providerSucceeded(address, n.failureScope())
 		p.mark(n, true)
 		p.success.Add(1)
 		p.active.Add(1)
@@ -524,20 +534,58 @@ func (p *provider) stats() map[string]any {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	nodes := []map[string]any{}
+	eligible, enabled, freeCount, paidCount := 0, 0, 0, 0
+	cfg := p.config()
 	for _, n := range p.nodes {
-		status := "Healthy"
-		if n.provider() == "cloudflare" && !p.daily.available(n.quotaGroup(), p.config().dailyLimit()) {
-			status = "Quota"
+		status := "Unverified"
+		if !n.LastSuccess.IsZero() {
+			status = "Healthy"
 		}
-		if n.Disabled {
+		if n.Failures > 0 {
+			status = "Degraded"
+		}
+		switch {
+		case n.Disabled:
 			status = "Disabled"
+		case !n.isFree() && cfg.PaidDisabled:
+			status = "PaidBlocked"
+		case time.Now().Before(n.RetryAfter):
+			status = "Cooling"
+		case n.provider() == "cloudflare" && !p.daily.available(n.quotaGroup(), cfg.dailyLimit()):
+			status = "Quota"
+		case !p.meter.canBegin(n.rates()):
+			status = "Budget"
+		default:
+			eligible++
+		}
+		if !n.Disabled {
+			enabled++
+			if n.isFree() {
+				freeCount++
+			} else {
+				paidCount++
+			}
+		}
+		var successAt, failureAt, retryAt any
+		if !n.LastSuccess.IsZero() {
+			successAt = n.LastSuccess
+		}
+		if !n.LastFailure.IsZero() {
+			failureAt = n.LastFailure
 		}
 		if time.Now().Before(n.RetryAfter) {
-			status = "Cooling"
+			retryAt = n.RetryAfter
 		}
-		nodes = append(nodes, map[string]any{"region": n.Region, "provider": n.provider(), "disabled": n.Disabled, "status": status, "failure_count": n.Failures, "connections": n.Opens, "target_failures": n.TargetFailures, "last_error": n.LastError})
+		nodes = append(nodes, map[string]any{"region": n.Region, "provider": n.provider(), "free": n.isFree(), "disabled": n.Disabled, "status": status, "failure_count": n.Failures, "connections": n.Opens, "target_failures": n.TargetFailures, "last_error": n.LastError, "last_success_at": successAt, "last_failure_at": failureAt, "retry_at": retryAt})
 	}
-	return map[string]any{"mode": "tcp-tunnel-no-mitm", "nodes": nodes, "active": p.active.Load(), "opening_or_active": len(p.slots), "max_connections": cap(p.slots), "success": p.success.Load(), "failed": p.failed.Load(), "rejected_limit": p.rejectedLimit.Load(), "rejected_private": p.rejectedPrivate.Load(), "cached_target_failures": p.cachedTargetFailures.Load(), "cooling_targets": p.targets.cooling(), "target_retry_policy": "single-probe; target failure backoff 30s to 10m; node failure retries up to 2 regions", "rejected_budget": p.rejectedBudget.Load(), "rejected_no_nodes": p.noNodes.Load(), "logging": p.loggingStatus(), "node_network": p.config().NodeNetwork, "cost_estimate": p.meter.snapshot(), "cost_breakdown": p.meter.breakdown(), "cloud_bill": readCloudBill(p.billingCache), "monthly_limit_yuan": p.config().Budget, "cloudflare_daily_limit": p.config().dailyLimit(), "provider_daily_usage": p.daily.snapshot(), "routing_strategy": p.config().Strategy, "paid_fallback_disabled": p.config().PaidDisabled, "max_connection_seconds": maxTunnelSeconds, "max_connection_bytes": maxTunnelBytes}
+	readiness := "ready"
+	if eligible == 0 {
+		readiness = "blocked"
+	} else if eligible < enabled {
+		readiness = "degraded"
+	}
+
+	return map[string]any{"version": buildVersion(), "started_at": p.started, "uptime_seconds": int64(time.Since(p.started).Seconds()), "readiness": readiness, "eligible_nodes": eligible, "enabled_nodes": enabled, "free_nodes": freeCount, "paid_nodes": paidCount, "mode": "tcp-tunnel-no-mitm", "nodes": nodes, "active": p.active.Load(), "opening_or_active": len(p.slots), "max_connections": cap(p.slots), "success": p.success.Load(), "failed": p.failed.Load(), "rejected_limit": p.rejectedLimit.Load(), "rejected_private": p.rejectedPrivate.Load(), "cached_target_failures": p.cachedTargetFailures.Load(), "cooling_targets": p.targets.cooling(), "target_retry_policy": "single-probe; target failure backoff 30s to 10m; node failure retries up to 2 regions", "rejected_budget": p.rejectedBudget.Load(), "rejected_no_nodes": p.noNodes.Load(), "logging": p.loggingStatus(), "node_network": p.config().NodeNetwork, "cost_estimate": p.meter.snapshot(), "cost_breakdown": p.meter.breakdown(), "cloud_bill": readCloudBill(p.billingCache), "monthly_limit_yuan": p.config().Budget, "cloudflare_daily_limit": p.config().dailyLimit(), "provider_daily_usage": p.daily.snapshot(), "routing_strategy": p.config().Strategy, "paid_fallback_disabled": p.config().PaidDisabled, "max_connection_seconds": maxTunnelSeconds, "max_connection_bytes": maxTunnelBytes}
 }
 func authOK(r *http.Request, c agentConfig) bool {
 	parts := strings.SplitN(r.Header.Get("Proxy-Authorization"), " ", 2)
@@ -677,20 +725,9 @@ func (remoteResolver) Resolve(ctx context.Context, name string) (context.Context
 	return ctx, nil, nil
 }
 func runAgent(path string) error {
-	raw, e := os.ReadFile(path)
+	c, e := loadAgentConfig(path)
 	if e != nil {
 		return e
-	}
-	var c agentConfig
-	if e = json.Unmarshal(raw, &c); e != nil {
-		return e
-	}
-	c, e = readSettings(c)
-	if e != nil {
-		return e
-	}
-	if c.User == "" || c.Password == "" {
-		return fmt.Errorf("proxy authentication must be enabled")
 	}
 	p, e := newProvider(c)
 	if e != nil {
@@ -709,12 +746,12 @@ func runAgent(path string) error {
 	}
 	defer listener.Close()
 	go func() { errors <- serveObservedSOCKS(listener, c, p) }()
-	go func() {
-		errors <- (&http.Server{Addr: c.HTTP, Handler: httpProxy(c, p), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 64 * 1024}).ListenAndServe()
-	}()
-	go func() {
-		errors <- (&http.Server{Addr: c.Dashboard, Handler: dashboardHandler(c, p), ReadHeaderTimeout: 5 * time.Second}).ListenAndServe()
-	}()
+	proxyServer := &http.Server{Addr: c.HTTP, Handler: httpProxy(c, p), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 64 * 1024}
+	defer proxyServer.Close()
+	go func() { errors <- proxyServer.ListenAndServe() }()
+	monitorServer := &http.Server{Addr: c.Dashboard, Handler: dashboardHandler(c, p), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
+	defer monitorServer.Close()
+	go func() { errors <- monitorServer.ListenAndServe() }()
 	log.Printf("TCP tunnel proxy started HTTP=%s SOCKS5=%s regions=%d CA=not-required", c.HTTP, c.SOCKS, len(c.Nodes))
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)

@@ -16,6 +16,21 @@ watchdog = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(watchdog)
 
 class WatchdogTests(unittest.TestCase):
+    def test_upstream_failure_is_not_a_local_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state=Path(directory)/"state"
+            with mock.patch.object(watchdog,"STATE",state), mock.patch.object(watchdog,"check",return_value={"readiness":"blocked"}), mock.patch.object(watchdog.subprocess,"run") as restart:
+                watchdog.main()
+                self.assertEqual(state.read_text(),"0")
+                restart.assert_not_called()
+
+    def test_corrupt_counter_recovers_and_requires_two_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state=Path(directory)/"state";state.write_text("interrupted-write")
+            with mock.patch.object(watchdog,"STATE",state), mock.patch.object(watchdog,"check",side_effect=TimeoutError), mock.patch.object(watchdog.subprocess,"run") as restart, mock.patch("builtins.print"):
+                watchdog.main();self.assertEqual(state.read_text(),"1");restart.assert_not_called()
+                watchdog.main();restart.assert_called_once()
+
     def test_authenticated_local_check_and_failure_threshold(self):
         expected = "Basic " + base64.b64encode(b"test-user:test-password").decode()
         class Handler(http.server.BaseHTTPRequestHandler):

@@ -1,56 +1,29 @@
 #!/usr/bin/env python3
-"""Check only local endpoints; never create billable SCF tunnels."""
-import base64
-import json
+"""Restart only an unhealthy local entry; upstream outages must not cause restart loops."""
 from pathlib import Path
-import socket
 import subprocess
-import urllib.request
+from local_health import address, check
 
 CONFIG = Path("/etc/scf-tunnel-proxy/agent.json")
 STATE = Path("/var/lib/scf-tunnel-proxy/watchdog-failures")
 
 
-def address(value):
-    host, port = value.rsplit(":", 1)
-    host = host.strip("[]")
-    if host in ("", "0.0.0.0"):
-        host = "127.0.0.1"
-    if host == "::":
-        host = "::1"
-    return host, int(port)
-
-
 def main():
     try:
-        config = json.loads(CONFIG.read_text())
-        settings = config.get("settings_path")
-        if not settings and config.get("ledger_path"):
-            settings = str(Path(config["ledger_path"]).with_name("settings.json"))
-        if settings and Path(settings).exists():
-            overrides = json.loads(Path(settings).read_text())
-            config["user"], config["password"] = overrides["user"], overrides["password"]
-        host, port = address(config["dashboard_addr"])
-        url_host = "[" + host + "]" if ":" in host else host
-        request = urllib.request.Request(f"http://{url_host}:{port}/api/stats")
-        credentials = base64.b64encode((config["user"] + ":" + config["password"]).encode()).decode()
-        request.add_header("Authorization", "Basic " + credentials)
-        with urllib.request.urlopen(request, timeout=5) as response:
-            stats = json.load(response)
-        if not stats.get("nodes") or stats.get("mode") != "tcp-tunnel-no-mitm":
-            raise ValueError("invalid local status")
-        for key in ("http_addr", "socks_addr"):
-            with socket.create_connection(address(config[key]), timeout=5):
-                pass
-        STATE.write_text("0")
+        check(CONFIG)
     except Exception as error:
-        count = int(STATE.read_text() or "0") + 1 if STATE.exists() else 1
+        try:
+            previous = max(0, int(STATE.read_text().strip()))
+        except (OSError, ValueError):
+            previous = 0
+        count = min(previous + 1, 2)
         STATE.write_text(str(count))
-        print("local_health_failure", count, str(error))
+        print("local_health_failure", count, type(error).__name__)
         if count >= 2:
             subprocess.run(["systemctl", "restart", "scf-tunnel-proxy"], check=True)
             STATE.write_text("0")
-
+    else:
+        STATE.write_text("0")
 
 if __name__ == "__main__":
     main()

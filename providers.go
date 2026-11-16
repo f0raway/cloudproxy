@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -46,6 +47,22 @@ func (n nodeConfig) rates() costRates {
 	}
 	return defaultRates()
 }
+
+// Scheduling depends on the configured cost model, not a vendor name.
+func (n nodeConfig) isFree() bool { return n.rates() == (costRates{}) }
+
+// Unrelated custom platforms must not share destination failure exclusions.
+func (n nodeConfig) failureScope() string {
+	if n.provider() != "custom" {
+		return n.provider()
+	}
+	u, err := url.Parse(n.URL)
+	if err != nil {
+		return "custom:" + n.URL
+	}
+	return "custom:" + u.Host
+}
+
 func (n nodeConfig) quotaGroup() string {
 	if n.QuotaGroup != "" {
 		return n.QuotaGroup

@@ -18,12 +18,13 @@ jobs:
         with:
           node-version: '22'
       - run: node --test workers/cloudflare/bridge.test.mjs
-      - run: node --check settings.js
+      - run: node --check settings.js && node --check dashboard.js
+      - run: node --test tests/*.test.cjs
       - run: python deploy/cloudflare.py --dry-run
       - run: go test -race -timeout 90s ./...
       - run: go vet ./...
       - run: python -m unittest discover -s deploy -p 'test_*.py' -v
       - run: python -m unittest discover -s ops -p 'test_*.py' -v
       - run: bash -n ops/build.sh ops/install.sh
-      - run: bash ops/build.sh
+      - run: bash ops/build.sh && bash ops/build.sh arm64
       - run: cp config/deploy.toml.example config/deploy.toml && python deploy/deploy.py --dry-run

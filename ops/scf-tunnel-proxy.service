@@ -1,5 +1,5 @@
 [Unit]
-Description=SCF TCP Tunnel Proxy (HTTP CONNECT and SOCKS5)
+Description=CloudProxy entry (HTTP CONNECT and SOCKS5)
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=0
@@ -9,6 +9,7 @@ Type=simple
 User=scftunnel
 Group=scftunnel
 WorkingDirectory=/var/lib/scf-tunnel-proxy
+ExecStartPre=/opt/scf-tunnel-proxy/scf-tunnel -check -config /etc/scf-tunnel-proxy/agent.json
 ExecStart=/opt/scf-tunnel-proxy/scf-tunnel -config /etc/scf-tunnel-proxy/agent.json
 Environment=TZ=Asia/Shanghai
 Restart=always

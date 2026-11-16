@@ -110,7 +110,12 @@ func validateSettings(s runtimeSettings) error {
 	if len(s.Nodes) < 1 || len(s.Nodes) > 64 {
 		return fmt.Errorf("需保留 1–64 个节点，可停用节点以暂停使用")
 	}
+	seenURLs := map[string]bool{}
 	for _, n := range s.Nodes {
+		if seenURLs[n.URL] {
+			return fmt.Errorf("节点地址重复，请合并重复节点")
+		}
+		seenURLs[n.URL] = true
 		u, e := url.Parse(n.URL)
 		if e != nil || u.Scheme != "wss" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || len(n.URL) > 2048 {
 			return fmt.Errorf("节点地址必须是无账号、查询参数的 wss:// 地址")
@@ -206,6 +211,11 @@ func targetAllowed(c agentConfig, address string) bool {
 	return true
 }
 func (p *provider) config() agentConfig { return *p.configValue.Load() }
+
+// Compare effective defaults, since the UI may make implicit provider/rates explicit.
+func sameNodeConfig(a, b nodeConfig) bool {
+	return a.provider() == b.provider() && a.URL == b.URL && a.Token == b.Token && a.Region == b.Region && a.Disabled == b.Disabled && a.quotaGroup() == b.quotaGroup() && a.rates() == b.rates()
+}
 func (p *provider) saveSettings(s runtimeSettings) error {
 	p.settingsMu.Lock()
 	defer p.settingsMu.Unlock()
@@ -224,6 +234,9 @@ func (p *provider) saveSettings(s runtimeSettings) error {
 		}
 	}
 	if err := validateSettings(s); err != nil {
+		return err
+	}
+	if err := validateNodeTokens(applySettings(current, s)); err != nil {
 		return err
 	}
 	path := current.settingsPath()
@@ -257,7 +270,17 @@ func (p *provider) saveSettings(s runtimeSettings) error {
 	}
 	nodes := make([]*nodeState, 0, len(s.Nodes))
 	for _, n := range s.Nodes {
-		nodes = append(nodes, &nodeState{nodeConfig: n})
+		var retained *nodeState
+		for _, old := range p.nodes {
+			if sameNodeConfig(old.nodeConfig, n) {
+				retained = old
+				break
+			}
+		}
+		if retained == nil {
+			retained = &nodeState{nodeConfig: n}
+		}
+		nodes = append(nodes, retained)
 	}
 	p.nodes = nodes
 	p.meter.mu.Lock()

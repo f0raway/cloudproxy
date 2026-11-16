@@ -250,12 +250,26 @@ func serveObservedSOCKS(listener net.Listener, c agentConfig, p *provider) error
 //go:embed dashboard.html
 var dashboardHTML string
 
+//go:embed dashboard.js
+var dashboardJS string
+
+//go:embed dashboard.css
+var dashboardCSS string
+
 //go:embed settings.js
 var settingsJS string
 
 func dashboardHandler(c agentConfig, p *provider) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/settings", p.settingsHandler)
+	mux.HandleFunc("/dashboard.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		io.WriteString(w, dashboardJS)
+	})
+	mux.HandleFunc("/dashboard.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		io.WriteString(w, dashboardCSS)
+	})
 	mux.HandleFunc("/settings.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		io.WriteString(w, settingsJS)
@@ -274,11 +288,11 @@ func dashboardHandler(c agentConfig, p *provider) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		c := p.config()
 		user, pass, ok := r.BasicAuth()
 		if !ok || c.User == "" || c.Password == "" || subtle.ConstantTimeCompare([]byte(user+":"+pass), []byte(c.User+":"+c.Password)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="CloudTunnel Monitor", charset="UTF-8"`)
+			w.Header().Set("WWW-Authenticate", `Basic realm="CloudProxy", charset="UTF-8"`)
 			http.Error(w, "Authentication required", 401)
 			return
 		}
