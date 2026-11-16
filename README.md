@@ -103,7 +103,7 @@ SCF 可能把 WebSocket 升级前的业务错误改写为 500/430“握手失败
 
 ### 1. 准备环境并构建
 
-需要 Go **1.26.5 或更高兼容版本**、Python **3.11+**。服务端安装脚本面向有 systemd 的 **Linux amd64**，依赖 `python3`、`logrotate` 及常规系统工具。推荐使用仍受支持的 Ubuntu LTS。
+需要 Go **1.26.5 或更高兼容版本**、Python **3.11+**。服务端安装脚本面向有 systemd 的 **Linux amd64**，依赖 `python3` 及常规系统工具。推荐使用仍受支持的 Ubuntu LTS。
 
 ```bash
 git clone https://github.com/f0raway/scf-tunnel-proxy.git
@@ -239,7 +239,7 @@ Action: Direct
 
 Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平台能力限制时可回退至允许的付费节点，并按目标缓存该平台限制 10 分钟。已有连接不重放应用数据。`workers.dev` 在部分网络不可达，部署成功不等于转发可用；应验证 DNS、TLS、TCP 转发，必要时使用自有域名，验证前停用该节点。
 
-免费 Cloudflare 节点报告目标 DNS/TCP 错误且允许付费回退时，会再尝试一次付费节点，并将该目标的免费路径短暂冷却 30 秒；付费节点本身的目标错误不继续跨区域重试。平台明确不支持目标时，免费路径缓存 10 分钟。关闭付费回退后不会执行这些付费尝试。
+免费 Cloudflare 节点报告目标 DNS/TCP 错误且允许付费回退时，会再尝试一次付费节点，并将该目标的免费路径按连续失败次数退避 30、60、120、240、480、600 秒；付费路径成功不会清除免费路径的失败计数；付费节点本身的目标错误不继续跨区域重试。平台明确不支持目标时，免费路径缓存 10 分钟。关闭付费回退后不会执行这些付费尝试。
 
 [Cloudflare 部署与权限](docs/CLOUDFLARE.md) · [页面配置与目标范围](docs/SETTINGS.md) · [官方免费额度](https://developers.cloudflare.com/workers/platform/pricing/) · [TCP 限制](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
 
