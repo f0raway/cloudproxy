@@ -28,7 +28,7 @@ func dialTarget(ctx context.Context, address string, allowPrivate bool) (net.Con
 	var last error
 	for _, v := range ips {
 		ip := v.IP
-		if !allowPrivate && (!ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()) {
+		if !allowPrivate && !publicTargetIP(ip) {
 			continue
 		}
 		c, e := (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), port))
@@ -112,5 +112,13 @@ func runNode() error {
 	if token == "" {
 		return fmt.Errorf("missing node authentication token")
 	}
-	return (&http.Server{Addr: ":9000", Handler: nodeHandler(token, false), ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 * 1024}).ListenAndServe()
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "9000"
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("invalid PORT")
+	}
+	return (&http.Server{Addr: net.JoinHostPort("", port), Handler: nodeHandler(token, false), ReadHeaderTimeout: 10 * time.Second, MaxHeaderBytes: 16 * 1024}).ListenAndServe()
 }

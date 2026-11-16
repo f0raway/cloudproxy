@@ -6,9 +6,18 @@
   "password": "CHANGE_ME_RANDOM_PROXY_PASSWORD",
   "token": "CHANGE_ME_SHARED_NODE_TOKEN",
   "nodes": [
-    {"region": "ap-shanghai", "url": "wss://YOUR_FUNCTION_HOST/tunnel"}
+    {
+      "region": "ap-shanghai",
+      "url": "wss://YOUR_FUNCTION_HOST/tunnel"
+    }
   ],
   "ledger_path": "/var/lib/scf-tunnel-proxy/usage.json",
   "monthly_limit_yuan": 8.0,
-  "max_connections": 32
+  "max_connections": 32,
+  "routing_strategy": "free_first",
+  "paid_fallback_disabled": false,
+  "cloudflare_daily_limit": 90000,
+  "target_allow": [],
+  "target_deny": [],
+  "target_ports": []
 }

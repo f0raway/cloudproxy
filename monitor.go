@@ -43,12 +43,13 @@ type connectionAttempt struct {
 	Error   string    `json:"error,omitempty"`
 }
 type connectionLog struct {
-	mu      sync.Mutex
-	next    uint64
-	active  map[uint64]*connectionEvent
-	recent  []connectionEvent
-	secrets []string
-	omitted uint64
+	secretsMu sync.RWMutex
+	mu        sync.Mutex
+	next      uint64
+	active    map[uint64]*connectionEvent
+	recent    []connectionEvent
+	secrets   []string
+	omitted   uint64
 }
 type connectionRecord struct {
 	log   *connectionLog
@@ -59,11 +60,13 @@ type connectionContextKey struct{}
 func newConnectionLog(c agentConfig) *connectionLog {
 	secrets := []string{c.Password, c.Token}
 	for _, n := range c.Nodes {
-		secrets = append(secrets, n.URL)
+		secrets = append(secrets, n.URL, n.Token)
 	}
 	return &connectionLog{active: make(map[uint64]*connectionEvent), secrets: secrets}
 }
 func (l *connectionLog) clean(s string) string {
+	l.secretsMu.RLock()
+	defer l.secretsMu.RUnlock()
 	for _, secret := range l.secrets {
 		if secret != "" {
 			s = strings.ReplaceAll(s, secret, "[redacted]")
@@ -210,6 +213,7 @@ func serveObservedSOCKS(listener net.Listener, c agentConfig, p *provider) error
 			return err
 		}
 		go func() {
+			c := p.config()
 			r := p.connections.begin(conn.RemoteAddr().String(), "SOCKS5")
 			if r == nil {
 				conn.Close()
@@ -233,8 +237,16 @@ func serveObservedSOCKS(listener net.Listener, c agentConfig, p *provider) error
 //go:embed dashboard.html
 var dashboardHTML string
 
+//go:embed settings.js
+var settingsJS string
+
 func dashboardHandler(c agentConfig, p *provider) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/settings", p.settingsHandler)
+	mux.HandleFunc("/settings.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		io.WriteString(w, settingsJS)
+	})
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(p.stats()) })
 	mux.HandleFunc("/api/connections", func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode(p.connections.snapshot()) })
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -249,14 +261,15 @@ func dashboardHandler(c agentConfig, p *provider) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		c := p.config()
 		user, pass, ok := r.BasicAuth()
 		if !ok || c.User == "" || c.Password == "" || subtle.ConstantTimeCompare([]byte(user+":"+pass), []byte(c.User+":"+c.Password)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="CloudTunnel Monitor", charset="UTF-8"`)
 			http.Error(w, "Authentication required", 401)
 			return
 		}
-		if r.Method != "GET" {
+		if r.Method != "GET" && !(r.URL.Path == "/api/settings" && r.Method == "POST") {
 			w.Header().Set("Allow", "GET")
 			http.Error(w, "Method not allowed", 405)
 			return
@@ -296,4 +309,28 @@ func (w observedWriter) Write(p []byte) (int, error) {
 	n, e := w.Writer.Write(p)
 	w.r.traffic(0, n)
 	return n, e
+}
+
+func (l *connectionLog) addSecrets(c agentConfig) {
+	l.secretsMu.Lock()
+	defer l.secretsMu.Unlock()
+	values := []string{c.Password, c.Token}
+	for _, n := range c.Nodes {
+		values = append(values, n.URL, n.Token)
+	}
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		found := false
+		for _, old := range l.secrets {
+			if old == v {
+				found = true
+				break
+			}
+		}
+		if !found {
+			l.secrets = append(l.secrets, v)
+		}
+	}
 }

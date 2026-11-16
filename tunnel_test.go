@@ -350,9 +350,9 @@ func TestRollingBudgetClosesBeforeReserveExhausted(t *testing.T) {
 
 func TestUnreachableTargetBackoffPreservesSlotsAndBudget(t *testing.T) {
 	_, p := setupTest(t)
-	p.mu.Lock()
-	p.targetCooldown["offline.invalid:443"] = time.Now().Add(time.Second)
-	p.mu.Unlock()
+	p.targets.mu.Lock()
+	p.targets.states["offline.invalid:443"] = &targetState{retryUntil: time.Now().Add(time.Second), lastUsed: time.Now()}
+	p.targets.mu.Unlock()
 	calls := p.meter.snapshot().Calls
 	if conn, e := p.dial(context.Background(), "tcp", "offline.invalid:443"); e == nil {
 		conn.Close()

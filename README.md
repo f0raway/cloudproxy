@@ -1,8 +1,8 @@
 # SCF Tunnel Proxy
 
-面向 **AI Agent 授权 Web 渗透测试、接口安全评估和自动化验证**的多区域 TCP 隧道代理。基于腾讯云 SCF Web 函数和 WSS，提供 **HTTP CONNECT、普通 HTTP 代理和带认证的 SOCKS5** 入口，也可供人工测试工具和浏览器使用。
+面向 **AI Agent 授权 Web 渗透测试、接口安全评估和自动化验证**的多区域 TCP 隧道代理。支持腾讯云 SCF、Cloudflare Workers 与兼容协议的其他 WSS 节点，提供 **HTTP CONNECT、普通 HTTP 代理和带认证的 SOCKS5** 入口，也可供人工测试工具和浏览器使用。
 
-**HTTPS 原始加密数据直接通过，不做 MITM，不生成网站证书，不要求安装私有 CA。** 同一条 TCP 连接固定使用同一条云端连接，新连接轮询选择区域；实际公网出口由腾讯云分配，不保证每次都不同。
+**HTTPS 原始加密数据直接通过，不做 MITM，不生成网站证书，不要求安装私有 CA。** 同一条 TCP 连接固定使用同一条云端连接，新连接按免费优先或轮换策略选择节点；实际公网出口由对应平台分配，不保证每次都不同。
 
 本仓库保存一次从 HTTP 请求重放方案转向 TCP 隧道的重新实现，包含运行代码、测试、通用部署脚本和运维文件。它不是原 [CloudProxyPool](https://github.com/25smoking/CloudProxyPool) 的原样镜像，不包含其 HTTPS 解密模块。
 
@@ -91,9 +91,9 @@ SCF 可能把 WebSocket 升级前的业务错误改写为 500/430“握手失败
 | 空闲关闭 | 120 秒（2 分钟） |
 | 单连接累计流量 | 上下行合计 128 MiB |
 | 数据分片与节奏 | 16 KiB，写入间隔至少 150ms；单方向约 100 KiB/s |
-| 新连接故障切换 | 最多尝试 2 个不同区域；成功后不迁移连接 |
+| 新连接故障切换 | 云节点故障最多尝试 2 个区域；目标错误不立即换区；成功后不迁移连接 |
 | 区域冷却 | 节点故障连续 3 次，冷却 30 秒 |
-| 失败目标退避 | 两次尝试均为目标错误时，按地址退避 15 秒 |
+| 失败目标退避 | 同一未知目标仅一次探测；目标失败按地址退避 30 秒至 10 分钟 |
 | 私网 / 回环目标 | 拒绝；应在电脑上配置 Direct |
 | UDP | 不支持 SOCKS5 UDP ASSOCIATE；不支持 QUIC 等 UDP 流量 |
 
@@ -227,19 +227,39 @@ Action: Direct
 
 保留 Localhost 直连规则。云函数无法替电脑访问电脑所在的内网，私网目标显示不可达不等于代理服务离线。[官方代理设置](https://www.proxifier.com/docs/win-v4/proxy.html) · [官方规则说明](https://www.proxifier.com/docs/win-v4/rules.html)
 
+## 多平台节点与页面配置
+
+监控页的 **配置管理** 可以修改代理/页面账号密码、月预算、目标允许/拒绝规则、端口范围、节点启停、节点地址/令牌和单价，并设置“免费优先/轮换”“允许付费回退”与 Cloudflare 本地每日限额。保存即时生效；连接本身继续保持原节点，降低预算触发费用保护除外。密码/节点令牌不回显，留空保留。
+
+运行配置覆盖文件自动保存在费用账本旁的 `settings.json`（600），可用 `settings_path` 指定。健康检查会读取覆盖后的账号，避免改密码后误重启。页面管理与代理共用一个账号，只应交给可信管理者。入口地址、账本路径及云平台管理凭据不通过网页下发。
+
+- **腾讯云 SCF**：兼容已有节点，保留大陆区域、128MB 模型与全局月预算。
+- **Cloudflare Workers Free**：独立 Worker 适配，不按腾讯云时长计费；本地默认每日 90,000 次尝试，UTC 换日、同配额组共享，落盘后重启不重置。100,000 次是官方账号级免费请求额度，不是每个 Worker 独享；直接访问 Worker 等本入口之外的请求不在本地计数内。
+- **其他平台**：可接入实现协议 2 的 WSS 节点，必须填写自己的费用模型。提供通用 Go 容器节点及 `PORT` 支持；不宣称所有云函数都支持原始 TCP/WebSocket，也不会替你开通未指定的平台。
+
+Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平台能力限制时可回退至允许的付费节点，并按目标缓存该平台限制 10 分钟。已有连接不重放应用数据。`workers.dev` 在部分网络不可达，部署成功不等于转发可用；应验证 DNS、TLS、TCP 转发，必要时使用自有域名，验证前停用该节点。
+
+免费 Cloudflare 节点报告目标 DNS/TCP 错误且允许付费回退时，会再尝试一次付费节点，并将该目标的免费路径短暂冷却 30 秒；付费节点本身的目标错误不继续跨区域重试。平台明确不支持目标时，免费路径缓存 10 分钟。关闭付费回退后不会执行这些付费尝试。
+
+[Cloudflare 部署与权限](docs/CLOUDFLARE.md) · [页面配置与目标范围](docs/SETTINGS.md) · [官方免费额度](https://developers.cloudflare.com/workers/platform/pricing/) · [TCP 限制](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
+
 ## 费用保护
 
 默认本地月阈值为 **8 元**，可作为 10 元目标预算的余量策略；**它不是腾讯云账单的精确封顶，也不保证长期免费**。
 
 - 本地模型使用 128MB、`0.00011108 元/GB·秒`、`0.0133 元/万次`、`0.80 元/GB` 的参考价格。
 - 活跃隧道的计算参考成本约 **0.05 元/连接小时**，流量、初始化及其他适用费用另计。
-- 初始只预留约 30 秒计算和 256 KiB 流量；数据传输及每 5 秒检查推动小额补足。
+- 取消每次固定追加 3 秒；初始只预留约 30 秒计算和 256 KiB 流量；数据传输及每 5 秒检查推动小额补足。
 - 预留接近耗尽且无法补足时停止该隧道；余额不足也拒绝新连接。费用账本采用文件持久保存，正常退出会结算。
 - 自然月按北京时间切换；跨月活跃连接保守继续计入估算。不要通过删除账本“恢复额度”。
 
 估算含保守流量系数，未接入实时云账单；不涵盖账号其他服务、绕过入口直接访问云 URL 的请求、全部日志费用等。价格、折扣、免费试用和计量以腾讯云实际账户为准。部署脚本固定 128MB，不能随意提高云函数内存而继续使用原费用模型。
 
 [官方定价](https://cloud.tencent.com.cn/document/product/583/12281) · [免费试用](https://cloud.tencent.com/document/product/583/12282)
+
+版本 2 会对当前月旧账本中“每次固定 3 秒”的余量执行一次校正，保留 `legacy_estimated_yuan` 与 `legacy_fixed_allowance_removed_yuan` 审计字段；不清空调用次数/流量，不改变预算上限。这是本地估算校正，不是云账单退款。旧账本中的其他保守预留仍然保留。
+
+入口先拦截非公网/保留 IP，失败目标先单次探测、再指数退避，避免客户端反复重试引发重复云调用。正常连接仍保持原区域、独立 TCP 与原空闲时限；不会为省钱重放或中断正常会话。
 
 ## 监控、日志与排查
 
@@ -249,7 +269,9 @@ sudo tail -100 /var/log/scf-tunnel-proxy/service.log
 sudo systemctl status scf-tunnel-proxy --no-pager
 ```
 
-监控页每 2 秒更新：
+监控页每 2 秒更新；费用区分本地运行估算、待用预留、历史校正和可选的腾讯云 SCF 账号出账合计。云账单每小时只读同步、可能延迟且包含账号下其他 SCF，不直接作为入口预算扣减依据。配置见 [成本优化与账单接入](docs/COSTS.md)。
+
+连接明细包括：
 
 - **来源 → 目标**：来源 IP/端口、目标域名或 IP/端口、SOCKS5 / CONNECT / HTTP 协议与所选区域。
 - **逐条状态**：握手/认证、等待、连接中、TCP 已连接、已结束、失败；显示持续时间和双向流量。
@@ -276,6 +298,8 @@ go test -race -timeout 90s ./...
 go vet ./...
 python3 -m unittest discover -s deploy -p 'test_*.py' -v
 python3 -m unittest discover -s ops -p 'test_*.py' -v
+node --test workers/cloudflare/bridge.test.mjs
+python3 deploy/cloudflare.py --dry-run
 bash -n ops/build.sh ops/install.sh
 bash ops/build.sh
 ```
@@ -291,6 +315,10 @@ agent.go             入口代理、认证、区域调度、故障分类与退�
 node.go              SCF WSS 服务、目标 DNS/TCP 连接和状态确认
 stream.go            字节流封装、分片、速率、半关闭和时长/流量限制
 monitor.go           有界连接记录、认证监控接口、来源与目标归属
+settings.go / settings.js  私密配置覆盖、即时应用和管理页面
+providers.go         多平台费率、每日配额与免费优先调度
+target_policy.go     非公网拦截、单次探测和指数退避
+billing.go           可选云账单缓存读取
 dashboard.html       内嵌的实时连接监控页面
 meter.go             小额滚动预留及持久费用估算
 main.go              同一程序的入口 / 云节点两种模式

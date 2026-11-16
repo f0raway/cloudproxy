@@ -51,6 +51,7 @@ if systemctl is-active --quiet scf-tunnel-proxy; then
 fi
 mv /opt/scf-tunnel-proxy/.binary-new /opt/scf-tunnel-proxy/scf-tunnel
 install -m 755 "$OPS_DIR/watchdog.py" /opt/scf-tunnel-proxy/watchdog.py
+install -m 755 "$OPS_DIR/billing_sync.py" /opt/scf-tunnel-proxy/billing_sync.py
 mv /etc/scf-tunnel-proxy/.config-new /etc/scf-tunnel-proxy/agent.json
 install -m 644 "$OPS_DIR/scf-tunnel-proxy.service" /etc/systemd/system/scf-tunnel-proxy.service
 cat > /etc/systemd/system/scf-tunnel-proxy-watchdog.service <<'SERVICE'

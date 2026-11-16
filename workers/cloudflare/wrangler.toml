@@ -1,0 +1,8 @@
+name = "cloud-tunnel-proxy"
+main = "worker.mjs"
+compatibility_date = "2025-01-01"
+workers_dev = true
+[observability]
+enabled = false
+# Set CLOUD_PROXY_TOKEN with `wrangler secret put CLOUD_PROXY_TOKEN`.
+# Never place deployment credentials or the tunnel token in this file.

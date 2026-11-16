@@ -7,7 +7,7 @@
 | HTTP `407` | 入口需要代理认证 | 检查协议、用户名密码和客户端是否发送 Proxy-Authorization |
 | `No supported authentication mechanism` | 这条 SOCKS 连接未提供服务端支持的用户名/密码认证方式 | 检查发起连接的软件；不一定就是截图中的那个已认证 Checker |
 | Proxifier 显示 `Authentication was successful`，随后 `0x04 Host unreachable` | 认证已过，目标连接或本地保护拒绝 | 查看对应时间和目标的服务端日志，不能再归因为未填密码 |
-| `target_failure=true` / `target_backoff` | 目标 DNS、连接拒绝、TCP 超时或地址限制 | 检查目标可达性；同一地址可能短暂退避 15 秒，不停用区域 |
+| `target_failure=true` / `target_backoff` | 目标 DNS、连接拒绝、TCP 超时或地址限制 | 检查目标可达性；同一地址按 30 秒、1/2/4/8/10 分钟递增退避；成功后恢复，不停用区域 |
 | HTTP `500/430` 的 WSS 握手失败 | 平台或通道层异常；旧协议也会将目标错误包装成这样 | 确认入口/节点都更新到协议 2，查节点确认和区域状态 |
 | `rejected_private` | 访问了私网/回环/链路本地 IP | 在 Proxifier 中配置 Direct，不要通过 SCF 访问本地网段 |
 | `rejected_limit` | 正在建立和活跃的隧道占满配置上限，排队后仍没有槽位 | 查看后台应用、DNS 重试、半关闭或空闲连接；评估配额和费用后调整 1–64 的上限 |

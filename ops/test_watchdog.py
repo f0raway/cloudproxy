@@ -50,6 +50,15 @@ class WatchdogTests(unittest.TestCase):
                 watchdog.main()
                 self.assertEqual(state.read_text(), "0")
                 restart.assert_not_called()
+                overlay = Path(directory) / "settings.json"
+                overlay.write_text(json.dumps({"user":"test-user", "password":"test-password"}))
+                config["settings_path"] = str(overlay)
+                config["password"] = "old-password"
+                path.write_text(json.dumps(config))
+                watchdog.main()
+                self.assertEqual(state.read_text(), "0")
+                restart.assert_not_called()
+                overlay.unlink()
                 config["password"] = "incorrect"
                 path.write_text(json.dumps(config))
                 with mock.patch("builtins.print"):

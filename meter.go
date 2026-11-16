@@ -17,15 +17,20 @@ const requestRate = 0.0133 / 10000
 const budgetWindow = 30*computeRate + 2*256*1024*trafficRate
 
 type usage struct {
-	Month     string  `json:"month"`
-	Estimated float64 `json:"estimated_yuan"`
-	Calls     uint64  `json:"invocations"`
-	Bytes     uint64  `json:"wire_bytes"`
+	ModelVersion           int     `json:"model_version"`
+	LegacyEstimated        float64 `json:"legacy_estimated_yuan,omitempty"`
+	LegacyAllowanceRemoved float64 `json:"legacy_fixed_allowance_removed_yuan,omitempty"`
+	Month                  string  `json:"month"`
+	Estimated              float64 `json:"estimated_yuan"`
+	Calls                  uint64  `json:"invocations"`
+	Bytes                  uint64  `json:"wire_bytes"`
 }
 type budgetLease struct {
-	m    *meter
-	held float64
-	done bool
+	rates costRates
+	m     *meter
+	held  float64
+	spent float64
+	done  bool
 }
 type meter struct {
 	mu     sync.Mutex
@@ -49,12 +54,20 @@ func openMeter(path string, limit float64) (*meter, error) {
 		return nil, e
 	}
 	m.roll()
+	if m.state.ModelVersion == 0 {
+		// v1 charged an unconditional 3s on every admitted attempt. Remove that
+		// deterministic allowance once, preserving the old estimate for audit.
+		m.state.LegacyEstimated = m.state.Estimated
+		m.state.LegacyAllowanceRemoved = math.Min(m.state.Estimated, float64(m.state.Calls)*3*computeRate)
+		m.state.Estimated -= m.state.LegacyAllowanceRemoved
+		m.state.ModelVersion = 2
+	}
 	return m, m.save()
 }
 func (m *meter) roll() {
 	month := time.Now().In(time.FixedZone("CST", 28800)).Format("2006-01")
 	if m.state.Month != month {
-		m.state = usage{Month: month}
+		m.state = usage{ModelVersion: 2, Month: month}
 		for charge := range m.active {
 			m.state.Estimated += charge.held
 			m.state.Calls++
@@ -76,18 +89,19 @@ func (m *meter) save() error {
 }
 func (m *meter) snapshot() usage { m.mu.Lock(); defer m.mu.Unlock(); m.roll(); return m.state }
 func estimatedCost(d time.Duration, n int64) float64 {
-	return (d.Seconds()+3)*computeRate + float64(n)*2*trafficRate + requestRate
+	return math.Max(0, d.Seconds())*computeRate + float64(n)*2*trafficRate + requestRate
 }
-func (m *meter) begin() (*budgetLease, error) {
+func (m *meter) begin() (*budgetLease, error) { return m.beginWithRates(defaultRates()) }
+func (m *meter) beginWithRates(rates costRates) (*budgetLease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.roll()
-	amount := budgetWindow + 3*computeRate + requestRate
-	if m.state.Estimated+amount > m.limit {
+	amount := rates.window() + rates.Request
+	if amount > 0 && m.state.Estimated+amount > m.limit {
 		return nil, fmt.Errorf("本月本地估算额度不足，新的转发暂停")
 	}
 	prev := m.state
-	charge := &budgetLease{m: m, held: amount}
+	charge := &budgetLease{m: m, held: amount, rates: rates}
 	m.active[charge] = true
 	m.state.Estimated += amount
 	m.state.Calls++
@@ -109,11 +123,12 @@ func (c *budgetLease) progress(d time.Duration, n int64) error {
 		return net.ErrClosed
 	}
 	m.roll()
-	spent := estimatedCost(d, n)
-	if c.held-spent >= budgetWindow/2 {
+	spent := c.rates.estimate(d, n)
+	c.spent = spent
+	if c.held-spent >= c.rates.window()/2 {
 		return nil
 	}
-	additional := spent + budgetWindow - c.held
+	additional := spent + c.rates.window() - c.held
 	if m.state.Estimated+additional > m.limit {
 		return fmt.Errorf("本月费用保护达到上限，当前隧道停止转发")
 	}
@@ -136,7 +151,7 @@ func (c *budgetLease) finish(d time.Duration, n int64) error {
 	m.roll()
 	c.done = true
 	delete(m.active, c)
-	m.state.Estimated += estimatedCost(d, n) - c.held
+	m.state.Estimated += c.rates.estimate(d, n) - c.held
 	if m.state.Estimated < 0 {
 		m.state.Estimated = 0
 	}
@@ -151,4 +166,22 @@ func (m *meter) reserve() (func(time.Duration, int64) error, error) {
 		return nil, e
 	}
 	return c.finish, nil
+}
+
+func (m *meter) breakdown() map[string]float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.roll()
+	reserve := 0.0
+	for lease := range m.active {
+		reserve += math.Max(0, lease.held-lease.spent)
+	}
+	return map[string]float64{"usage_estimated_yuan": math.Max(0, m.state.Estimated-reserve), "pending_reserve_yuan": reserve}
+}
+
+func (m *meter) canBegin(rates costRates) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	amount := rates.window() + rates.Request
+	return amount == 0 || m.state.Estimated+amount <= m.limit
 }

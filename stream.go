@@ -16,26 +16,27 @@ const maxTunnelSeconds = 7200
 const idleSeconds = 120
 
 type wsStream struct {
-	region       string
-	onTraffic    func(int, int)
-	failureMu    sync.Mutex
-	firstFailure error
-	closing      atomic.Bool
-	c            *websocket.Conn
-	reader       io.Reader
-	writeMu      sync.Mutex
-	nextWrite    time.Time
-	lastActivity atomic.Int64
-	transferred  atomic.Int64
-	maxBytes     int64
-	onClose      func()
-	onProgress   func(int64) error
-	closeOnce    sync.Once
+	region        string
+	writeInterval time.Duration
+	onTraffic     func(int, int)
+	failureMu     sync.Mutex
+	firstFailure  error
+	closing       atomic.Bool
+	c             *websocket.Conn
+	reader        io.Reader
+	writeMu       sync.Mutex
+	nextWrite     time.Time
+	lastActivity  atomic.Int64
+	transferred   atomic.Int64
+	maxBytes      int64
+	onClose       func()
+	onProgress    func(int64) error
+	closeOnce     sync.Once
 }
 
 func newStream(c *websocket.Conn) *wsStream {
 	c.SetReadLimit(256 * 1024)
-	s := &wsStream{c: c, maxBytes: maxTunnelBytes}
+	s := &wsStream{c: c, maxBytes: maxTunnelBytes, writeInterval: 150 * time.Millisecond}
 	s.lastActivity.Store(time.Now().UnixNano())
 	return s
 }
@@ -113,7 +114,7 @@ func (s *wsStream) Write(p []byte) (n int, err error) {
 		if delay := time.Until(s.nextWrite); delay > 0 {
 			time.Sleep(delay)
 		}
-		s.nextWrite = time.Now().Add(150 * time.Millisecond)
+		s.nextWrite = time.Now().Add(s.writeInterval)
 		if err := s.account(n); err != nil {
 			return total, err
 		}

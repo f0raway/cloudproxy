@@ -24,6 +24,12 @@ def address(value):
 def main():
     try:
         config = json.loads(CONFIG.read_text())
+        settings = config.get("settings_path")
+        if not settings and config.get("ledger_path"):
+            settings = str(Path(config["ledger_path"]).with_name("settings.json"))
+        if settings and Path(settings).exists():
+            overrides = json.loads(Path(settings).read_text())
+            config["user"], config["password"] = overrides["user"], overrides["password"]
         host, port = address(config["dashboard_addr"])
         url_host = "[" + host + "]" if ":" in host else host
         request = urllib.request.Request(f"http://{url_host}:{port}/api/stats")
