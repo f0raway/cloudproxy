@@ -17,13 +17,20 @@
 
 本仓库由原 [CloudProxyPool](https://github.com/25smoking/CloudProxyPool) 的使用需求重新实现，历史仓库地址和可执行文件名保留兼容。项目的核心是稳定代理池，AI Agent 授权安全测试是其中一种应用。
 
+## 阅读路线
+
+- **第一次部署**：从[部署与首次配置](#部署与首次配置)开始，选择一个上游，再安装入口。
+- **已有服务**：查看[页面配置](#页面配置逐项说明)与[客户端配置](#使用方法)。
+- **理解底层**：查看[架构与原理](#架构与原理)、[调度和失败处理](#节点调度与失败处理)。
+- **长期维护**：查看[日常运维](#长期运行与升级)、[故障排查](docs/TROUBLESHOOTING.md)及[更新记录](CHANGELOG.md)。
+
 ## 适合什么场景
 
 - 为 AI Agent 的 HTTP 客户端、浏览器和支持代理的测试工具提供统一网络出口。
 - 在已授权范围内进行 Web / API 行为验证，对连接失败、区域故障与费用保护分别诊断。
 
 - 在一台自有 Linux 服务器上暴露统一代理端口，电脑只连接这台服务器。
-- 新建连接时轮询多个 SCF 区域，已有连接不随请求切换出口。
+- 新建连接时按费用优先或轮换策略选择多个上游，已有连接不随请求切换出口。
 - 保持浏览器与目标网站的端到端 TLS，使用网站真实证书。
 - 为个人低流量使用设置本地费用估算保护，并查看连接错误原因。
 
@@ -36,7 +43,7 @@
         ↓
 AI Agent → 执行器（目标校验、任务限速、测试证据）
         ↓ HTTP CONNECT / SOCKS5
-SCF Tunnel Proxy → 大陆区域 SCF WSS → 已授权目标
+CloudProxy → Cloudflare / 腾讯云 / 兼容 WSS 节点 → 已授权目标
 ```
 
 项目承担网络传输层；任务规划、漏洞判断、测试授权和证据整理由 Agent 与执行器完成。代理凭据应放在执行器的 Secret/环境变量中，不写入 Agent 提示词、聊天记录、任务报告或命令回显。
@@ -61,7 +68,7 @@ Agent 并行任务数量不等于 TCP 连接数。建议从低并发验证连接
 sequenceDiagram
     participant C as 电脑 / Proxifier
     participant A as Linux 代理入口
-    participant F as SCF Web 函数
+    participant F as Cloudflare / SCF / 兼容节点
     participant T as 目标网站
     C->>A: SOCKS5 CONNECT 或 HTTP CONNECT + 账号认证
     A->>A: 检查私网目标、连接数和本地预算
@@ -74,7 +81,7 @@ sequenceDiagram
     T-->>C: 原始响应，经 F、A 原样返回
 ```
 
-电脑到入口是常规 HTTP/SOCKS5；入口到 SCF 是 WSS；SCF 到目标是 TCP。HTTPS 的 TLS 连接端点仍然是**电脑与目标网站**。WSS 是另一层传输保护，不替换网站证书。
+电脑到入口是常规 HTTP/SOCKS5；入口到所选云节点是 WSS；云节点到目标是 TCP。HTTPS 的 TLS 连接端点仍然是**电脑与目标网站**。WSS 是另一层传输保护，不替换网站证书。
 
 这里的“HTTP/HTTPS 代理”通常指 HTTP CONNECT：代理地址可以是 `http://服务器:10800`，也可以用于访问 HTTPS 网站。**入口本身目前没有 TLS 服务端监听功能**，不应将它直接填成 `https://服务器:10800`。
 
@@ -89,6 +96,31 @@ sequenceDiagram
 SCF 可能把 WebSocket 升级前的业务错误改写为 500/430“握手失败”。如果据此暂停整个区域，一个无法连接的目标就会影响其他网站。
 
 当前协议使用 `X-Tunnel-Protocol: 2`：先完成认证 WSS，再在隧道内发送 `{"ok":true}` 或目标错误。**目标失败与节点故障分开统计**；同一失败目标短暂退避，不暂停整个区域。详见 [协议与故障机制](docs/ARCHITECTURE.md)。
+
+### 节点调度与失败处理
+
+一次代理连接经历以下步骤：
+
+1. **认证与范围校验**：校验入口账号，读取目标域名或 IP、端口，检查允许/拒绝规则。私网、回环和保留地址在本地拒绝。
+2. **取得资源**：检查并发槽位、月预算、平台每日限额、节点停用/冷却及目标退避状态。排队和拒绝同样记录在监控页。
+3. **选择节点**：`free_first` 优先选三项单价都为零的节点；`round_robin` 在符合条件的节点间轮换。禁用付费回退后，新连接只能选择免费节点。
+4. **确认目标可达**：建立 WSS、通过节点令牌认证，再等待云端目标 TCP 建连结果。只有收到成功确认，才向客户端报告代理建连成功。
+5. **固定转发**：二进制帧携带原始 TCP 字节，支持单向 EOF；不解密 HTTPS，不重新执行已经发送的应用请求。
+6. **结束与结算**：对关闭、超时、限额或错误记录结果，更新本地费用与节点状态，释放 socket、队列槽位和预留。
+
+建连阶段每次最多尝试两个节点，具体是否回退取决于错误类型、平台和费用策略。节点故障会影响节点健康；目标 DNS/TCP 失败按目标及故障范围退避，避免一个坏目标拖累整个池。免费路径目标失败可尝试另一故障范围，付费路径目标失败不无限跨区域重试。成功转发后的连接断开交给客户端重连。
+
+**轮换单位是新 TCP 连接，不是网页刷新、HTTP 请求或固定公网 IP。** 平台可能让不同节点共享出口；同一连接存活期间保持原隧道，但连接重建后平台可能分配不同出口。
+
+### 三种凭据分别在哪里使用
+
+| 凭据 | 使用位置 | 是否交给客户端 / 页面 |
+| --- | --- | --- |
+| 代理账号与密码 | 电脑 → 入口；浏览器 → 管理面板 | 客户端需要；页面与代理共用账号 |
+| 节点令牌 | 入口 → 云端隧道 | 仅入口私有配置和云端环境；保存后页面不回显 |
+| 腾讯云密钥 / Cloudflare API Token | 部署工具 → 云平台管理 API | 不写入客户端，不交给入口代理进程 |
+
+云平台 API Token 不能当节点令牌使用。节点地址必须是已经部署了本项目协议的 WSS 地址，不是随便一个云函数 HTTP URL。
 
 ## 当前默认限制
 
@@ -109,6 +141,112 @@ SCF 可能把 WebSocket 升级前的业务错误改写为 500/430“握手失败
 | UDP | 不支持 SOCKS5 UDP ASSOCIATE；不支持 QUIC 等 UDP 流量 |
 
 时长、流量和平台限制仍会断开连接，客户端需要重连；进程自动恢复也不能无损恢复原 TCP 会话。速度还取决于网络、冷启动、SCF 配额和目标网站。
+
+## 部署与首次配置
+
+整体顺序：**下载构建 → 部署至少一个上游 → 生成入口配置 → 安装服务 → 登录页面 → 验证客户端**。只装入口而没有可用上游，无法访问目标。
+
+### 1. 下载并构建
+
+准备 Go **1.26.5 或更高兼容版本**、Python **3.11+**、Git。入口安装脚本适用于带 systemd 的 Linux amd64 / arm64。可以在开发电脑交叉编译，但生成的 Linux 程序只能在相应架构的 Linux 上运行。
+
+```bash
+git clone https://github.com/f0raway/scf-tunnel-proxy.git
+cd scf-tunnel-proxy
+bash ops/build.sh
+# ARM64 入口改为：bash ops/build.sh arm64
+```
+
+默认产物为 `dist/scf-tunnel-linux-amd64`。下面安装命令按 amd64 编写；ARM64 请替换产物名。腾讯云部署包使用 amd64，不能拿 ARM64 入口产物上传。
+
+### 2. 选择并部署上游
+
+| 选择 | 适用条件 | 下一步 |
+| --- | --- | --- |
+| Cloudflare Workers Free | 入口能访问 Worker 地址，目标符合平台 TCP 限制 | 按下方 Cloudflare 步骤部署 |
+| 腾讯云 SCF | 需要大陆区域上游，接受按实际用量收费 | 按[腾讯云部署详解](#腾讯云部署详解)部署，使用生成的 `runtime/agent.json` |
+| 其他平台 / 自建节点 | 支持长 WebSocket、目标 DNS 与原始 TCP 出站 | 按[通用节点协议](docs/PROVIDERS.md)部署，再运行配置向导 |
+
+可以先接入一个上游完成验收，再在页面添加其他节点。部署工具不会替你自动购买未指定平台的资源。
+
+#### Cloudflare：创建凭据并部署
+
+1. 登录 Cloudflare，在 **My Profile → API Tokens** 创建自定义 API Token，给目标账号 **Account → Workers Scripts → Edit** 权限；不要使用 Global API Key。workers.dev 部署不需要修改 DNS 的权限。
+2. 进入 **Workers & Pages** 的账号信息复制 **Account ID**，它不是 API Token 的 ID。界面位置变化时参考[官方查找说明](https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/)。
+3. 在可信部署机器创建仓库外的私有文件：
+
+```bash
+install -d -m 700 "$HOME/.config/cloudproxy"
+install -m 600 config/cloudflare.toml.example "$HOME/.config/cloudproxy/cloudflare.toml"
+# 使用你熟悉的编辑器填写下面两个字段；不要提交真实文件。
+```
+
+```toml
+[cloudflare]
+account_id = "YOUR_ACCOUNT_ID"
+api_token = "YOUR_API_TOKEN"
+worker_name = "cloud-tunnel-proxy"
+```
+
+先检查打包，再部署（第二条命令会实际创建或更新 Worker）：
+
+```bash
+python3 deploy/cloudflare.py --dry-run
+python3 deploy/cloudflare.py \
+  --credentials "$HOME/.config/cloudproxy/cloudflare.toml" --no-register
+```
+
+凭据文件旁会生成两个私有文件：`cloudflare-node-token` 保存节点令牌；`cloudflare-node.json` 保存 `url`、`token`、`provider`、`quota_group`。权限均为 600。**下一步配置向导中填写的是这里的节点 URL 和 token，不能填管理 API Token。** 不要把文件内容贴到公开 Issue 或终端共享记录中。
+
+若入口网络无法访问 workers.dev，可在 Cloudflare 给该 Worker 绑定已有域名的独立子域名，再设置 `custom_domain = "proxy.example.com"`。部署器会核对现有绑定，不代替创建绑定；不要覆盖其他网站正在使用的子域名。详细权限、绑定与网络检查见 [Cloudflare 部署指南](docs/CLOUDFLARE.md)。
+
+#### 其他平台：先验证协议能力
+
+可运行本仓库 Go 程序的 `-node` 模式；节点读取 `CLOUD_PROXY_TOKEN`，监听 `PORT`（默认 9000）。平台前端需要提供可信 TLS 证书、WebSocket 升级及足够长的超时。容器构建入口：
+
+```bash
+docker build -f workers/Dockerfile -t cloudproxy-node .
+```
+
+将镜像部署到选定平台，通过平台的 Secret 配置节点令牌，将服务端口映射到公开 WSS 域名。容器自身没有 TLS 证书管理；TLS 由平台入口或你自己的反向代理提供。配置 `provider=custom`，明确填写计算、流量和调用单价。完整契约见 [上游接入](docs/PROVIDERS.md)。
+
+### 3. 生成入口私有配置
+
+Cloudflare 或通用节点使用离线向导；腾讯云自动部署已生成 `runtime/agent.json` 时，直接使用该文件，不必重复生成。
+
+```bash
+python3 ops/configure.py --output config/agent.json
+```
+
+依次输入：平台类型、WSS 地址、节点令牌、入口账号、入口密码、月度费用保护上限。通用节点还需填写三项单价。向导不创建云资源、不访问节点，不覆盖已有文件；密码和令牌不回显，输出权限 600。
+
+第一次使用同一 Cloudflare 账号的多个节点时，在页面给这些节点填入同一个 `quota_group`（部署状态文件已给出）；默认未填组名的 Cloudflare 节点会共同使用默认组。不要通过多个节点重复计算账号免费额度。
+
+### 4. 安装到 Linux 入口服务器
+
+如果在其他电脑构建，安全复制程序、`ops/` 与私有配置到 Linux，再在仓库目录执行：
+
+```bash
+./dist/scf-tunnel-linux-amd64 -check -config config/agent.json
+sudo bash ops/install.sh dist/scf-tunnel-linux-amd64 config/agent.json
+sudo systemctl status scf-tunnel-proxy --no-pager
+```
+
+`-check` 只读检查有效配置，不发云请求，也不证明目标可达。安装器创建低权限服务用户、开机自启和本地健康检查，默认把配置安装到 `/etc/scf-tunnel-proxy/agent.json`。默认开放监听 HTTP `10800`、SOCKS5 `10801`；防火墙不会被脚本修改，请只允许可信内网、VPN 或指定来源访问。
+
+### 5. 打开管理页面
+
+默认面板仅监听服务器的 `127.0.0.1:8081`。在自己的电脑执行：
+
+```bash
+ssh -N -L 18081:127.0.0.1:8081 your-user@your-server
+```
+
+保持 SSH 连接，浏览器访问 `http://127.0.0.1:18081`，使用向导设置的**代理账号密码**登录。这里的 `your-user` 是服务器 SSH 用户，与代理账号无关。已有历史部署的路径、服务名、监听地址可能不同，先参考[现有部署迁移](docs/EXISTING_DEPLOYMENT.md)。
+
+### 6. 完成第一次验收
+
+先按[使用方法](#使用方法)配置 curl 或 Proxifier，再在“连接记录”确认出现自己的来源和目标、TCP 建连成功、上下行数据。访问 HTTPS 成功时应验证目标网站真实证书；随后测试一个不可达目标，确认原始错误可见且其他目标仍可用。只有进程运行或节点“可尝试”，还不能视作转发验证通过。
 
 ## 腾讯云部署详解
 
@@ -135,7 +273,7 @@ chmod 600 config/deploy.toml
 
 编辑 `config/deploy.toml`。默认区域为上海、广州、北京、成都、南京，不包含境外区域。区域是否对账号开放、是否有配额，以腾讯云实时结果为准。
 
-通过环境变量提供凭据，或在**本地私有配置**的 `[tencent]` 段填写。不要提交真实值。以下交互读取不会把密钥写进命令历史：
+以下交互命令按 Bash 编写（macOS 的 zsh 请先运行 `bash`）。通过环境变量提供凭据，或在**本地私有配置**的 `[tencent]` 段填写。不要提交真实值。以下交互读取不会把密钥写进命令历史：
 
 ```bash
 read -r -p 'Tencent SecretId: ' TENCENTCLOUD_SECRET_ID
@@ -165,7 +303,7 @@ export TENCENTCLOUD_SECRET_ID TENCENTCLOUD_SECRET_KEY
 1. 打包 Linux 程序和可执行 `scf_bootstrap`。
 2. 创建 128MB、7200 秒超时、120 秒空闲超时的 WebSocket Web 函数。
 3. 使用 Python3.9 作为平台基础运行环境，通过启动脚本执行静态 Go 程序并监听 `9000`。
-4. 创建函数 URL，生成独立节点访问令牌；不启用固定出口 IP、NAT 网关或预置并发。
+4. 创建函数 URL，生成本次部署使用的节点访问令牌；不启用固定出口 IP、NAT 网关或预置并发。
 5. 保存节点清单与代理配置；只打印区域状态，不打印密钥、令牌或密码。
 
 默认私有输出：
@@ -199,7 +337,7 @@ sudo systemctl status scf-tunnel-proxy --no-pager
 
 从私有 `runtime/agent.json` 或 `/etc/scf-tunnel-proxy/agent.json` 读取 `user`、`password`。**代理密码和腾讯云密钥是两套不同的凭据。**
 
-以下使用文档示例 IP `203.0.113.10`，请替换成实际入口服务器。交互读取密码后测试，不需要 `-k` 或 `--cacert`：
+以下命令使用 Bash 与文档示例 IP `203.0.113.10`，请替换成实际入口服务器。交互读取密码后测试，不需要 `-k` 或 `--cacert`：
 
 ```bash
 read -r -p 'Proxy username: ' PROXY_USER
@@ -215,6 +353,8 @@ curl --noproxy '' --proxy-user "$PROXY_USER:$PROXY_PASSWORD" \
 curl --noproxy '' --proxy-user "$PROXY_USER:$PROXY_PASSWORD" \
   -x socks5h://203.0.113.10:10801 https://myip.ipip.net
 ```
+
+测试完成后运行 `unset PROXY_USER PROXY_PASSWORD` 清理当前 shell 变量。
 
 `SOCKS5h` 将域名交给云端解析；客户端也可发送目标 IP。HTTPS 应看到目标网站真实证书。
 
@@ -250,11 +390,33 @@ Action: Direct
 - **Cloudflare Workers Free**：独立 Worker 适配，不按腾讯云时长计费；本地默认每日 90,000 次尝试，UTC 换日、同配额组共享，落盘后重启不重置。100,000 次是官方账号级免费请求额度，不是每个 Worker 独享；直接访问 Worker 等本入口之外的请求不在本地计数内。
 - **其他平台**：可接入实现协议 2 的 WSS 节点，必须填写自己的费用模型。提供通用 Go 容器节点及 `PORT` 支持；不宣称所有云函数都支持原始 TCP/WebSocket，也不会替你开通未指定的平台。
 
-Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平台能力限制时可回退至允许的付费节点，并按目标缓存该平台限制 10 分钟。已有连接不重放应用数据。`workers.dev` 在部分网络不可达，部署成功不等于转发可用；应验证 DNS、TLS、TCP 转发，必要时使用自有域名，验证前停用该节点。
+Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平台能力限制时可回退至符合费用策略的其他节点，并按目标缓存该平台限制 10 分钟。已有连接不重放应用数据。`workers.dev` 在部分网络不可达，部署成功不等于转发可用；应验证 DNS、TLS、TCP 转发，必要时使用自有域名，验证前停用该节点。
 
 零单价节点报告目标 DNS/TCP 错误时，可尝试另一个故障范围的节点（每次建连总计最多两次尝试）；关闭付费节点时仍可选择其他免费上游。失败范围对该目标按 30 秒至 10 分钟退避，其他范围的成功不清除它的计数。付费节点的目标错误不继续跨区重试；平台明确不支持目标时缓存 10 分钟。通用节点按端点主机隔离故障，腾讯云和 Cloudflare 各使用自己的平台范围。
 
 [Cloudflare 部署与权限](docs/CLOUDFLARE.md) · [页面配置与目标范围](docs/SETTINGS.md) · [官方免费额度](https://developers.cloudflare.com/workers/platform/pricing/) · [TCP 限制](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
+
+## 页面配置逐项说明
+
+打开左侧 **设置**，按分组编辑，完成后点击保存。配置在服务端整体校验后写入私有覆盖文件；失败时保留原配置。切换工作区保留未保存的编辑，离开页面会提示。
+
+| 分组 / 配置 | 如何填写 | 生效与注意事项 |
+| --- | --- | --- |
+| 账户与调度 · 用户名、密码 | 设置自己的代理管理账号；密码至少 8 字节 | 保存后客户端同步更新认证；密码留空保留，页面不回显 |
+| 月度保护上限 | 人民币金额；例如目标 10 元时预留余量设为 8 元 | 全部付费节点共用；本地估算不等于云账单精确封顶 |
+| 调度策略 | 免费优先或轮换 | 仅影响新连接；轮换仍受节点健康、配额、预算约束 |
+| 允许付费回退 | 接受费用时开启 | 关闭后新连接只能使用零单价节点，已有付费连接不被主动迁移 |
+| Cloudflare 每日限额 | 默认 90,000；0 表示停止新建 Cloudflare 连接 | 本地按 UTC 换日、失败尝试也计数；不是云账号剩余额度 |
+| 上游配置 · 平台、名称、地址 | 选实际适配类型；使用 `wss://主机/tunnel` | 名称便于辨认；只填 URL 不能部署云函数 |
+| 节点令牌 | 填部署时生成的节点 token | 已保存的同 URL 节点留空保留；新增 URL 应明确填令牌 |
+| 费用单价 | 元/连接秒、元/GB、元/次 | 通用节点必须明确填写；填 0 不会让收费平台免单 |
+| 配额组 | 同一 Cloudflare 账号所有节点用同组 | 多入口仍需自行分摊账号额度；本地文件不跨主机同步 |
+| 目标范围 | 域名、通配子域名、IP/CIDR；端口单独填写 | 拒绝优先；允许留空表示不额外缩小公网范围 |
+| 日志与网络 | 连接日志开关、单文件大小、备份数量、上游地址族 | IPv4/IPv6 选择影响入口连接节点；不改变目标规则 |
+
+目标范围示例：允许 `example.com` 与 `*.example.com`，拒绝 `admin.example.com`，端口只允许 `80` 和 `443`。`*.example.com` 不包含根域名；不要填 URL 路径。IP/CIDR 规则只匹配客户端直接提交的 IP，不在入口提前解析域名。私网与 Fake-IP 始终拒绝，应让客户端传真实域名或对内网使用 Direct。
+
+并发上限 `max_connections`（默认 32，可设 1–64）、入口监听地址、账本路径、账单缓存路径和云平台管理密钥不在页面编辑；并发与监听等基础参数修改后需重启服务。页面覆盖优先于基础配置的对应可编辑字段；手改基础文件前需检查 `settings.json`，否则看起来会像修改没有生效。详细字段与接口见 [设置说明](docs/SETTINGS.md)。
 
 ## 费用保护
 
@@ -266,13 +428,13 @@ Cloudflare TCP 接口限制 Cloudflare IP、私网地址及端口 25；返回平
 - 预留接近耗尽且无法补足时停止该隧道；余额不足也拒绝新连接。费用账本采用文件持久保存，正常退出会结算。
 - 自然月按北京时间切换；跨月活跃连接保守继续计入估算。不要通过删除账本“恢复额度”。
 
-估算含保守流量系数，未接入实时云账单；不涵盖账号其他服务、绕过入口直接访问云 URL 的请求、全部日志费用等。价格、折扣、免费试用和计量以腾讯云实际账户为准。部署脚本固定 128MB，不能随意提高云函数内存而继续使用原费用模型。
+估算含保守流量系数，依据连接时长、调用次数与转发字节本地计算，不直接使用云账单扣减。可选账单同步每小时读取腾讯云账号 SCF 出账缓存，存在延迟，且可能包括其他 SCF 函数。估算不涵盖账号其他服务、绕过入口直接访问云 URL 的请求、全部日志费用等。价格、折扣、免费试用和计量以腾讯云实际账户为准。部署脚本固定 128MB，不能随意提高云函数内存而继续使用原费用模型。
 
 [官方定价](https://cloud.tencent.com.cn/document/product/583/12281) · [免费试用](https://cloud.tencent.com/document/product/583/12282)
 
 版本 2 会对当前月旧账本中“每次固定 3 秒”的余量执行一次校正，保留 `legacy_estimated_yuan` 与 `legacy_fixed_allowance_removed_yuan` 审计字段；不清空调用次数/流量，不改变预算上限。这是本地估算校正，不是云账单退款。旧账本中的其他保守预留仍然保留。
 
-入口先拦截非公网/保留 IP，失败目标先单次探测、再指数退避，避免客户端反复重试引发重复云调用。正常连接仍保持原区域、独立 TCP 与原空闲时限；不会为省钱重放或中断正常会话。
+入口先拦截非公网/保留 IP，失败目标先单次探测、再指数退避，避免客户端反复重试引发重复云调用。连接保持原节点与独立 TCP；不会重放已发送的数据。预算无法补足、空闲、时长和流量达到上限时仍会关闭隧道。
 
 ## 监控、日志与排查
 
@@ -305,6 +467,23 @@ ssh -L 18081:127.0.0.1:8081 your-user@your-server
 随后访问 `http://127.0.0.1:18081`，使用代理账号密码登录。[错误码与排查步骤](docs/TROUBLESHOOTING.md)
 
 连接日志与运行日志各自按文件大小轮转（默认 5 MiB × 3，两类合计约 30 MiB），配置页可调整。页面将本地拒绝/退避、客户端认证/断开与目标/节点错误分别统计，避免把 Fake-IP 拒绝率当成系统故障率。日志失败或队列丢弃会显示计数。服务器到云节点还可选自动、仅 IPv4、仅 IPv6；这不会改变客户端目标范围。[日志与诊断说明](docs/LOGGING.md)
+
+## 长期运行与升级
+
+安装器提供开机自启、进程异常恢复、本地健康检查以及有上限的日志。健康检查不调用收费云隧道；上游暂时不可达不会单凭这一点触发反复重启。它仍是单入口服务，不能提供无中断升级、跨机器会话迁移或可用性 SLA。
+
+升级前备份基础配置、`settings.json`、`usage.json`、`provider-daily-usage.json`、旧程序及部署节点令牌。使用新版本检查有效配置，再按[运维说明](docs/OPERATIONS.md)安装。升级重启会断开已有连接，客户端需要重连；费用和配额文件必须保留。不要让多个入口同时写同一份账本。
+
+| 现象 | 先看哪里 | 常见解释 |
+| --- | --- | --- |
+| 面板能打开，代理不通 | 连接记录的最终错误与上游状态 | 面板只证明入口运行，不证明上游或目标可达 |
+| Proxifier 认证失败 | 10801 条目的认证设置 | 需要启用用户名/密码；使用代理账号而非 SSH 账号 |
+| `198.18.x.x` 被拒绝 | 客户端 DNS / Clash Fake-IP 模式 | 云端没有客户端的映射表；改为代理侧解析域名 |
+| workers.dev DNS/TLS 失败 | 入口服务器到 Worker 的网络 | 检查 DNS 与路径，必要时绑定自有域名；不能靠关闭证书验证解决 |
+| TCP 已连接但网站仍报错 | 客户端 TLS/HTTP 结果、双向流量 | 建连成功不是业务成功；HTTPS 正文对代理不可见 |
+| 月预算或日配额不足 | 费用区域、配额组、云平台账单 | 保留账本，调整真实预算/流量；重启不应恢复额度 |
+
+详见 [错误排查](docs/TROUBLESHOOTING.md)、[成本与账单](docs/COSTS.md)、[日志保留](docs/LOGGING.md)。
 
 ## 开发与验证
 

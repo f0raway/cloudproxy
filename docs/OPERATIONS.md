@@ -16,14 +16,14 @@
 
 ## 首次部署顺序
 
-1. 在持有腾讯云部署权限的可信机器构建 Linux amd64 二进制。
-2. 复制 `.example` 配置，设置凭据环境变量，执行 `--dry-run` 检查包格式和计划。
-3. 明确资源和费用后执行 `deploy/deploy.py`，保留令牌与部署状态。
-4. 将二进制、`ops/` 和私有 `agent.json` 安全送到入口服务器。
-5. 运行安装脚本，只向可信客户端开放代理端口；面板保留回环监听。
+1. 构建与入口 Linux 架构匹配的二进制；腾讯云节点包另需 Linux amd64 产物。
+2. 选择上游：[Cloudflare](CLOUDFLARE.md)、[腾讯云](../README.md#腾讯云部署详解)或[兼容节点](PROVIDERS.md)，先检查部署计划和费用。
+3. 部署上游并保留节点令牌、地址与平台状态。Cloudflare / 通用节点用 `ops/configure.py` 生成入口配置；腾讯云部署器会生成 `runtime/agent.json`。
+4. 将二进制、`ops/` 和私有 `agent.json` 安全送到入口服务器，执行 `-check` 检查配置。
+5. 运行安装脚本，只向可信客户端开放代理端口；面板保留回环监听，通过 SSH 隧道访问。
 6. 实际测试正确/错误认证、HTTP、HTTPS、SOCKS5、目标不可达、连接复用及预期并发，再投入使用。
 
-云端程序通过可执行 `scf_bootstrap` 运行。依赖 Python3.9 基础运行环境不代表用 Python 解释 Go 二进制，它只是 SCF 的基础环境；实际执行的是静态 Linux 程序。
+腾讯云的云端程序通过可执行 `scf_bootstrap` 运行。依赖 Python3.9 基础运行环境不代表用 Python 解释 Go 二进制，它只是 SCF 的基础环境；实际执行的是静态 Linux 程序。
 
 ## 更新云端
 
