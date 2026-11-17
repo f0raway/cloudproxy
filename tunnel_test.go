@@ -242,11 +242,21 @@ func TestUnreachableTargetDoesNotDisableNode(t *testing.T) {
 
 func TestTargetErrorOverWebSocketDoesNotCoolNode(t *testing.T) {
 	_, p := setupTest(t)
+	// Use a refused local connection; external DNS may synthesize answers even
+	// for .invalid domains, making a target-error test depend on the gateway.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 4; i++ {
-		conn, err := p.dial(context.Background(), "tcp", "diagnostic.invalid:443")
+		conn, err := p.dial(context.Background(), "tcp", address)
 		if err == nil {
 			conn.Close()
-			t.Fatal("invalid target connected")
+			t.Fatal("closed local target connected")
 		}
 		if _, ok := err.(*targetDialError); ok {
 			t.Fatal("expected error with region context")

@@ -46,7 +46,7 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error("输出文件已存在，不会覆盖；请选择一个新文件")
-    print("CloudProxy 配置向导：请先部署兼容协议 2 的节点。此向导不创建云资源。")
+    print("cloudproxy 配置向导：请先部署兼容协议 2 的节点。此向导不创建云资源。")
     provider = input("上游类型 cloudflare / tencent / custom [custom]: ").strip() or "custom"
     if provider not in {"cloudflare", "tencent", "custom"}:
         parser.error("请选择 cloudflare、tencent 或 custom")

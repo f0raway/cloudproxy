@@ -1,4 +1,4 @@
-# 部署 CloudProxy
+# 部署 cloudproxy
 
 本指南面向已有兼容上游的 Linux systemd 服务器。HTTP/SOCKS5 端口只应对可信客户端开放；控制台默认仅本机可访问。云端管理密钥留在部署工具中，入口只需要节点地址和节点令牌。
 
@@ -17,8 +17,8 @@
 需要 Go 版本以 `go.mod` 为准、Python 3.11+，并使用支持 systemd 的 Linux 服务器。
 
 ```bash
-git clone https://github.com/f0raway/scf-tunnel-proxy.git
-cd scf-tunnel-proxy
+git clone https://github.com/f0raway/cloudproxy.git
+cd cloudproxy
 bash ops/build.sh          # x86_64 / amd64
 # ARM64 服务器改用：bash ops/build.sh arm64
 ```

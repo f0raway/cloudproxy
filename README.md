@@ -1,4 +1,4 @@
-# CloudProxy
+# cloudproxy
 
 **面向长期运行、可接入多家上游的代理池服务。** 在自己的服务器上提供统一的 HTTP CONNECT、普通 HTTP 和 SOCKS5 入口，客户端只需配置一次；腾讯云 SCF、Cloudflare Workers、其他云平台或自建服务作为可替换的上游节点。
 
@@ -15,7 +15,7 @@
 | 易部署 | 交互配置向导、Linux amd64/arm64、systemd 安装与升级失败恢复 |
 | 长期运行 | 自动重启、有界日志和队列、持久化预算/配额、无云调用的本地检查 |
 
-本仓库由原 [CloudProxyPool](https://github.com/25smoking/CloudProxyPool) 的使用需求重新实现，历史仓库地址和可执行文件名保留兼容。项目的核心是稳定代理池，AI Agent 授权安全测试是其中一种应用。
+本仓库由原 [CloudProxyPool](https://github.com/25smoking/CloudProxyPool) 的使用需求重新实现，项目现名为 `cloudproxy`。历史可执行文件 `scf-tunnel`、systemd 服务 `scf-tunnel-proxy`、安装目录和云资源标记继续保留兼容，升级无需改动已有账本与私有配置。项目的核心是稳定代理池，AI Agent 授权安全测试是其中一种应用。
 
 ## 阅读路线
 
@@ -23,6 +23,35 @@
 - **已有服务**：查看[页面配置](#页面配置逐项说明)与[客户端配置](#使用方法)。
 - **理解底层**：查看[架构与原理](#架构与原理)、[调度和失败处理](#节点调度与失败处理)。
 - **长期维护**：查看[日常运维](#长期运行与升级)、[故障排查](docs/TROUBLESHOOTING.md)及[更新记录](CHANGELOG.md)。
+
+## 界面预览
+
+以下是实际 WebUI 的本地演示截图。账号、来源地址、目标域名、节点状态和费用均为模拟数据，不包含真实部署凭据或访问记录；画面仅关闭了过渡动画并裁去浏览器工具栏。
+
+**运行概览**：集中查看入口运行状态、连接活动、调度与费用保护。
+
+![cloudproxy 运行概览，展示连接统计、近期活动和预算占用](docs/images/overview.png)
+
+**连接记录**：追踪来源到目标，区分正在连接、TCP 已连接、正常结束和原始错误。
+
+![cloudproxy 连接记录，展示来源、目标、协议、流量和结果](docs/images/connections.png)
+
+<details>
+<summary>查看原始错误详情、上游节点和配置页面</summary>
+
+**错误详情**：点击连接记录，展开原始错误、连接时间与尝试过程。
+
+![cloudproxy 连接详情抽屉中的原始网络错误](docs/images/detail.png)
+
+**上游节点**：区分已验证可连接、尚未验证和已停用状态。
+
+![cloudproxy 多平台上游节点状态](docs/images/nodes.png)
+
+**页面配置**：在分组设置中调整认证、预算、调度、上游、目标范围与日志。
+
+![cloudproxy 账户与调度配置页面](docs/images/settings.png)
+
+</details>
 
 ## 适合什么场景
 
@@ -43,7 +72,7 @@
         ↓
 AI Agent → 执行器（目标校验、任务限速、测试证据）
         ↓ HTTP CONNECT / SOCKS5
-CloudProxy → Cloudflare / 腾讯云 / 兼容 WSS 节点 → 已授权目标
+cloudproxy → Cloudflare / 腾讯云 / 兼容 WSS 节点 → 已授权目标
 ```
 
 项目承担网络传输层；任务规划、漏洞判断、测试授权和证据整理由 Agent 与执行器完成。代理凭据应放在执行器的 Secret/环境变量中，不写入 Agent 提示词、聊天记录、任务报告或命令回显。
@@ -151,8 +180,8 @@ SCF 可能把 WebSocket 升级前的业务错误改写为 500/430“握手失败
 准备 Go **1.26.5 或更高兼容版本**、Python **3.11+**、Git。入口安装脚本适用于带 systemd 的 Linux amd64 / arm64。可以在开发电脑交叉编译，但生成的 Linux 程序只能在相应架构的 Linux 上运行。
 
 ```bash
-git clone https://github.com/f0raway/scf-tunnel-proxy.git
-cd scf-tunnel-proxy
+git clone https://github.com/f0raway/cloudproxy.git
+cd cloudproxy
 bash ops/build.sh
 # ARM64 入口改为：bash ops/build.sh arm64
 ```
@@ -255,8 +284,8 @@ ssh -N -L 18081:127.0.0.1:8081 your-user@your-server
 需要 Go **1.26.5 或更高兼容版本**、Python **3.11+**。服务端安装脚本面向有 systemd 的 **Linux amd64 / arm64**，依赖 `python3` 及常规系统工具。推荐使用仍受支持的 Ubuntu LTS。
 
 ```bash
-git clone https://github.com/f0raway/scf-tunnel-proxy.git
-cd scf-tunnel-proxy
+git clone https://github.com/f0raway/cloudproxy.git
+cd cloudproxy
 bash ops/build.sh
 ```
 

@@ -15,7 +15,7 @@
   const current=pages[page];settingsOpen=page==='settings';
   for(const [key,item]of Object.entries(pages)){field(item.button).setAttribute('aria-pressed',String(key===page));field(item.view).hidden=key!==page}
   field('pageTitle').textContent=current.title;field('pageCrumb').textContent=current.title;field('pageDescription').textContent=current.description;
-  document.title='CloudProxy · '+current.title;
+  document.title='cloudproxy · '+current.title;
   field('pause').hidden=settingsOpen;
   if(settingsOpen){field('live').textContent='配置管理';field('live').className='status paused';if(!loaded&&!loading)load()}
   else if(paused){field('live').textContent='已暂停 · 保留当前数据';field('live').className='status paused'}

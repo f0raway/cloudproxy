@@ -1,4 +1,4 @@
-# CloudProxy product direction
+# cloudproxy product direction
 
 The primary purpose is a stable, vendor-independent proxy pool for public users.
 Tencent SCF, Cloudflare Workers and compatible WSS/TCP providers are upstream

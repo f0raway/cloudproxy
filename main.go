@@ -26,10 +26,10 @@ func main() {
 	node := flag.Bool("node", false, "run a compatible WebSocket/TCP node")
 	config := flag.String("config", "/etc/scf-tunnel-proxy/agent.json", "agent config")
 	check := flag.Bool("check", false, "validate effective configuration without contacting upstreams or writing data")
-	showVersion := flag.Bool("version", false, "show CloudProxy build version")
+	showVersion := flag.Bool("version", false, "show cloudproxy build version")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("CloudProxy", buildVersion())
+		fmt.Println("cloudproxy", buildVersion())
 		return
 	}
 	var err error

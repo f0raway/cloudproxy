@@ -1,6 +1,6 @@
 # 接入任何兼容的上游
 
-CloudProxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据是协议能力，不是厂商名称。普通 HTTP 函数只有请求/响应能力时，不能只填一个 URL 就变成 TCP 代理。
+cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据是协议能力，不是厂商名称。普通 HTTP 函数只有请求/响应能力时，不能只填一个 URL 就变成 TCP 代理。
 
 ## 选择接入方式
 
