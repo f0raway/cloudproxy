@@ -5,9 +5,30 @@
  window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
  field('settingsForm').addEventListener('input',()=>setDirty(true));
  field('settingsForm').addEventListener('change',()=>setDirty(true));
- function view(settings){settingsOpen=settings;field('showSettings').setAttribute('aria-pressed',String(settings));field('showMonitor').setAttribute('aria-pressed',String(!settings));if(settings){field('live').textContent='配置管理';field('live').className='status'}field('monitorView').hidden=settings;field('settingsView').hidden=!settings;if(settings){if(!loaded&&!loading)load()}else update()}
-
- field('showSettings').onclick=()=>view(true);field('showMonitor').onclick=()=>view(false);
+ const pages={
+  overview:{button:'showMonitor',view:'monitorView',title:'运行概览',description:'查看入口状态、连接活动与费用保护。'},
+  connections:{button:'showConnections',view:'connectionsView',title:'连接记录',description:'追踪来源与目标，查看连接结果和原始错误。'},
+  nodes:{button:'showNodes',view:'nodesView',title:'上游节点',description:'查看各平台节点的可用状态与实际连接表现。'},
+  settings:{button:'showSettings',view:'settingsView',title:'设置',description:'管理认证、调度、上游与访问规则。'}
+ };
+ function view(page){
+  const current=pages[page];settingsOpen=page==='settings';
+  for(const [key,item]of Object.entries(pages)){field(item.button).setAttribute('aria-pressed',String(key===page));field(item.view).hidden=key!==page}
+  field('pageTitle').textContent=current.title;field('pageCrumb').textContent=current.title;field('pageDescription').textContent=current.description;
+  document.title='CloudProxy · '+current.title;
+  field('pause').hidden=settingsOpen;
+  if(settingsOpen){field('live').textContent='配置管理';field('live').className='status paused';if(!loaded&&!loading)load()}
+  else if(paused){field('live').textContent='已暂停 · 保留当前数据';field('live').className='status paused'}
+  else update();
+ }
+ const sections={Account:'账户与调度',Nodes:'上游配置',Targets:'目标范围',Logs:'日志与网络'};
+ function section(name){for(const key of Object.keys(sections)){field('settings'+key).hidden=key!==name;field('tab'+key).setAttribute('aria-pressed',String(key===name))}}
+ for(const key of Object.keys(sections))field('tab'+key).onclick=()=>section(key);
+ // Validate one field at a time, revealing its group before browser focus.
+ field('settingsForm').noValidate=true;
+ for(const [key,item]of Object.entries(pages))field(item.button).onclick=()=>view(key);
+ field('openConnections').onclick=()=>view('connections');
+ for(const [id,name]of [['manageNodes','Nodes'],['openAccount','Account'],['openLogs','Logs']])field(id).onclick=()=>{section(name);view('settings')};
  function labelled(parent,label,type,value,name){const wrap=document.createElement('label');wrap.className='setting-field';const text=document.createElement('span');text.textContent=label;const input=document.createElement('input');input.type=type;input.value=value??'';input.dataset.name=name;input.autocomplete='off';if(type==='number'){input.min='0';input.step='any';input.required=true}wrap.append(text,input);parent.append(wrap);return input}
  function nodeEditor(node={provider:'custom',region:'',url:''}){
   const box=document.createElement('article');box.className='node-editor';
@@ -28,7 +49,10 @@
  field('addNode').onclick=()=>{if(!loaded||saving)return;nodeEditor();setDirty(true)};field('reloadSettings').onclick=()=>{if(!dirty||window.confirm('重新读取会丢弃尚未保存的修改，是否继续？'))load()};
  function lines(value){return value.split(/\n/).map(s=>s.trim()).filter(Boolean)}
  field('settingsForm').onsubmit=async event=>{
-  event.preventDefault();if(!loaded||saving)return;saving=true;const button=field('saveSettings');button.disabled=true;field('settingsFields').disabled=true;field('saveStatus').textContent='正在保存…';
+  event.preventDefault();if(!loaded||saving)return;
+  const invalid=field('settingsForm').querySelector('input:invalid, select:invalid, textarea:invalid');
+  if(invalid){const group=invalid.closest('.settings-section');if(group)section(group.id.replace('settings',''));invalid.reportValidity();return}
+  saving=true;const button=field('saveSettings');button.disabled=true;field('settingsFields').disabled=true;field('saveStatus').textContent='正在保存…';
   try{
    const nodes=[...field('nodeEditors').children].map(box=>{const get=name=>box.querySelector('[data-name="'+name+'"]');const n={provider:get('provider').value,region:get('region').value.trim(),url:get('url').value.trim(),token:get('token').value,disabled:!get('enabled').checked,quota_group:get('quota_group').value.trim()};if(n.provider!=='cloudflare')n.rates={compute_yuan_per_second:Number(get('compute').value),traffic_yuan_per_gb:Number(get('traffic').value),request_yuan:Number(get('request').value)};return n});
    const ports=field('configPorts').value.trim();const payload={user:field('configUser').value.trim(),password:field('configPassword').value,monthly_limit_yuan:Number(field('configBudget').value),logging:{enabled:field('configLogEnabled').checked,max_file_mb:Number(field('configLogMB').value),backups:Number(field('configLogBackups').value)},node_network:field('configNodeNetwork').value,routing_strategy:field('configStrategy').value,paid_fallback_disabled:!field('configPaid').checked,cloudflare_daily_limit:Number(field('configCFDaily').value),target_allow:lines(field('configAllow').value),target_deny:lines(field('configDeny').value),target_ports:ports?ports.split(/[,，\s]+/).map(Number):[],nodes};
