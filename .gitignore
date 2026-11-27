@@ -24,3 +24,9 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+
+# Tencent Cloud EdgeOne local state (CLI-managed)
+.env
+.edgeone/*
+.tef_dist/*
+node_modules/

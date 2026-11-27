@@ -195,6 +195,8 @@ bash ops/build.sh
 | 选择 | 适用条件 | 下一步 |
 | --- | --- | --- |
 | Cloudflare Workers Free | 入口能访问 Worker 地址，目标符合平台 TCP 限制 | 按下方 Cloudflare 步骤部署 |
+| 腾讯 EdgeOne Makers | 实验 Cloud Functions 适配；当前 WebSocket/TCP 云端验证未通过 | [三大免费上游指南](docs/EDGE_UPSTREAMS.md)，验证前不要启用 |
+| 阿里云 ESA | 已有独立协议 2 兼容端点 | 页面选择 ESA 类型；[额度与部署说明](docs/EDGE_UPSTREAMS.md) |
 | 腾讯云 SCF | 需要大陆区域上游，接受按实际用量收费 | 按[腾讯云部署详解](#腾讯云部署详解)部署，使用生成的 `runtime/agent.json` |
 | 其他平台 / 自建节点 | 支持长 WebSocket、目标 DNS 与原始 TCP 出站 | 按[通用节点协议](docs/PROVIDERS.md)部署，再运行配置向导 |
 

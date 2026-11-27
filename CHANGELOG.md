@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 明确 Cloudflare、EdgeOne 与 ESA 三大免费上游方向，在设置中列出各自额度、限制与部署指南。
+- 新增 EdgeOne Makers Node.js Cloud Functions 实验适配、私有部署工具及云端 TCP 验证；HTTP 部署成功，但本实现和腾讯官方 WebSocket 示例均出现帧链路断开，不启用为可用上游。
+- 补充 ESA 的 AK/SK 官方 CLI 部署方式与 Credits/旧免费模式区别，不用 HTTP fetch 冒充 TCP。
+
 - 控制台增加独立登录页和退出登录，复用现有代理账号；健康检查仍使用 Basic 认证。
 - 增加 EdgeOne 与 ESA 的兼容节点类型，仅登记已有协议 2 端点，不自动部署或假定免费。
 - 本地入口可用显式空节点列表启动和配置，不会直接转发流量；健康检查区分本地运行与上游就绪。

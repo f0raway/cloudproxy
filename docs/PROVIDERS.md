@@ -8,14 +8,15 @@ cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据�
 | --- | --- | --- | --- |
 | 腾讯云 SCF Web 函数 | 腾讯云 SCF | `deploy/deploy.py` + Go 节点 | 内置参考单价，可覆盖 |
 | Cloudflare Workers | Cloudflare Workers Free | `deploy/cloudflare.py` + Worker 代码 | 本地零单价模型，另有限额保护 |
-| 腾讯云 EdgeOne / 阿里云 ESA | 腾讯 EdgeOne / 阿里云 ESA · 兼容节点 | 添加现有协议 2 端点；不自动部署 | 必须明确填写三项单价 |
+| 腾讯云 EdgeOne | 腾讯 EdgeOne · 兼容节点 | `ops/edgeone_check.py` + 实验 Cloud Functions；当前云端验证未通过 | 必须明确填写三项单价 |
+| 阿里云 ESA | 阿里云 ESA · 兼容节点 | 添加现有协议 2 端点；不自动部署 | 必须明确填写三项单价 |
 | 其他云函数、容器或自建服务 | 通用 WSS/TCP | 自行部署 Go `-node` 或实现协议 2 | 必须明确填写三项单价 |
 
 这里的“支持其他平台”表示可以接入兼容节点，不表示仓库已有每家厂商的自动部署器。云平台还可能限制 TCP 目标、WebSocket、连接寿命、并发或出口地址；请先验证平台能力。官方文档入口：Cloudflare 的 TCP sockets 文档、腾讯云 SCF Web 函数文档。
 
 ### 腾讯云 EdgeOne（EO）与阿里云 ESA
 
-两家都有免费额度，但尚未验证它们的免费边缘函数能作为本项目的原生 TCP 出口。目前的 `edgeone`、`esa` 类型复用协议 2 客户端，不提供云端运行时适配或自动部署。作为对照，[Cloudflare Workers 明确提供 `connect()` 出站 TCP API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
+两家都是核心免费上游方向，但目前尚未完成可用的原生 TCP 验证。`edgeone`、`esa` 类型复用协议 2 客户端；EdgeOne 另有实验部署器。完整额度、限制、凭据与实测结果见[三大免费上游](EDGE_UPSTREAMS.md)。作为对照，[Cloudflare Workers 明确提供 `connect()` 出站 TCP API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
 
 | 平台 | 接入前需要确认 |
 | --- | --- |
