@@ -27,6 +27,6 @@ __pycache__/
 
 # Tencent Cloud EdgeOne local state (CLI-managed)
 .env
-.edgeone/*
-.tef_dist/*
+**/.edgeone/
+**/.tef_dist/
 node_modules/
