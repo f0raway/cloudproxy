@@ -51,7 +51,7 @@ function renderPool(s){
   const e=document.createElement('article');e.className='node'+(['Cooling','Degraded','Quota','Budget','PaidBlocked'].includes(n.status)?' bad':'')+(n.disabled?' disabled':'')+(n.status==='Unverified'?' unverified':'');
   const title=document.createElement('strong');title.textContent=n.region;
   const status=document.createElement('span');status.className='node-status';status.textContent=statuses[n.status]||n.status;
-  const meta=document.createElement('span');meta.className='node-meta';meta.textContent=(n.provider==='cloudflare'?'Cloudflare':n.provider==='custom'?'通用 WSS/TCP':'腾讯云 SCF')+' · '+(n.free?'零单价模型':'有费用')+' · 建连 '+n.connections;
+  const meta=document.createElement('span');meta.className='node-meta';const labels={cloudflare:'Cloudflare',edgeone:'腾讯 EdgeOne',esa:'阿里云 ESA',tencent:'腾讯云 SCF'};meta.textContent=(labels[n.provider]||'通用 WSS/TCP')+' · '+(n.free?'零单价模型':'有费用')+' · 建连 '+n.connections;
   const last=document.createElement('span');last.className='node-meta';last.textContent=n.last_success_at?'最近成功 '+time(n.last_success_at):'尚无本次运行的成功记录';
   e.append(title,status,meta,last);
   if(n.retry_at){const retry=document.createElement('span');retry.className='node-meta';retry.textContent='冷却至 '+time(n.retry_at);e.append(retry)}

@@ -38,6 +38,16 @@ func (n nodeConfig) provider() string {
 	}
 	return n.Provider
 }
+func (n nodeConfig) knownProvider() bool {
+	switch n.provider() {
+	case "tencent", "cloudflare", "edgeone", "esa", "custom":
+		return true
+	}
+	return false
+}
+func (n nodeConfig) needsExplicitRates() bool {
+	return n.provider() != "tencent" && n.provider() != "cloudflare"
+}
 func (n nodeConfig) rates() costRates {
 	if n.provider() == "cloudflare" {
 		return costRates{}
@@ -51,16 +61,16 @@ func (n nodeConfig) rates() costRates {
 // Scheduling depends on the configured cost model, not a vendor name.
 func (n nodeConfig) isFree() bool { return n.rates() == (costRates{}) }
 
-// Unrelated custom platforms must not share destination failure exclusions.
+// Compatible endpoints on different hosts must not share failure exclusions.
 func (n nodeConfig) failureScope() string {
-	if n.provider() != "custom" {
+	if !n.needsExplicitRates() {
 		return n.provider()
 	}
 	u, err := url.Parse(n.URL)
 	if err != nil {
-		return "custom:" + n.URL
+		return n.provider() + ":" + n.URL
 	}
-	return "custom:" + u.Host
+	return n.provider() + ":" + u.Host
 }
 
 func (n nodeConfig) quotaGroup() string {

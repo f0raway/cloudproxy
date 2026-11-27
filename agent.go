@@ -134,11 +134,11 @@ func newProvider(c agentConfig) (*provider, error) {
 	p := &provider{started: time.Now(), daily: quota, csrf: newCSRF(), billingCache: c.BillingCache, rejectionLog: log.New(&limitedSOCKSLog{}, "proxy_reject ", log.LstdFlags), connections: newConnectionLog(c), token: c.Token, meter: m, slots: make(chan struct{}, limit), live: make(map[*wsStream]struct{}), targets: newTargetPolicy(), stopCtx: stopCtx, cancel: cancel}
 	p.configValue.Store(&c)
 	for _, n := range c.Nodes {
-		if !n.rates().valid() || (n.provider() == "custom" && n.Rates == nil) {
+		if !n.rates().valid() || (n.needsExplicitRates() && n.Rates == nil) {
 			cancel()
 			return nil, fmt.Errorf("invalid or missing provider cost model")
 		}
-		if n.provider() != "tencent" && n.provider() != "cloudflare" && n.provider() != "custom" {
+		if !n.knownProvider() {
 			cancel()
 			return nil, fmt.Errorf("unknown node provider")
 		}

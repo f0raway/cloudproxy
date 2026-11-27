@@ -69,6 +69,25 @@ func TestExplicitEmptyPoolCanStartAndBeConfigured(t *testing.T) {
 		t.Fatalf("could not configure a compatible node: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestEdgeProviderSettingsRequireExplicitRates(t *testing.T) {
+	_, p := setupTest(t)
+	s := editableSettings(p)
+	for _, name := range []string{"edgeone", "esa"} {
+		s.Nodes[0].Provider = name
+		s.Nodes[0].Rates = nil
+		if err := validateSettings(s); err == nil {
+			t.Fatalf("%s accepted without rates", name)
+		}
+		s.Nodes[0].Rates = &costRates{}
+		if err := p.saveSettings(s); err != nil {
+			t.Fatal(err)
+		}
+		if n := p.next(nil); n == nil || n.provider() != name || !n.isFree() || n.failureScope() != name+":node.example" {
+			t.Fatalf("%s did not enter the compatible node pool", name)
+		}
+	}
+}
 func TestSettingsPrivateAuthenticatedAndCSRFSafe(t *testing.T) {
 	c, p := setupTest(t)
 	h := dashboardHandler(c, p)

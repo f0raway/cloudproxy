@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · cloudproxy</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f6f8;color:#171a21;font:16px system-ui,sans-serif;padding:24px}
+    main{width:min(100%,400px);background:#fff;border:1px solid #dfe2e8;border-radius:16px;padding:32px;box-shadow:0 12px 36px #171a2110}
+    strong{font-size:14px;letter-spacing:.05em;color:#525c6d}h1{font-size:26px;margin:12px 0 6px}p{color:#525c6d;line-height:1.5;margin:0 0 22px}
+    label{display:block;margin:14px 0 6px}input,button{width:100%;min-height:44px;border-radius:8px;font:inherit;padding:8px 12px}input{border:1px solid #828c9d}button{margin-top:20px;border:0;background:#212634;color:#fff;cursor:pointer}input:focus-visible,button:focus-visible{outline:2px solid #245eea;outline-offset:2px}
+    p[role=alert]{margin:16px 0 0;color:#a12824}
+  </style>
+</head>
+<body><main>
+  <strong>cloudproxy</strong>
+  <h1>登录控制台</h1>
+  <p>使用现有的代理账号和密码登录。</p>
+  <form action="/login" method="post">
+    <label for="username">用户名</label>
+    <input id="username" name="username" autocomplete="username" maxlength="128" required>
+    <label for="password">密码</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" maxlength="255" required>
+    {{if .}}<p role="alert">用户名或密码不正确，请重试。</p>{{end}}
+    <button type="submit">登录</button>
+  </form>
+</main></body>
+</html>

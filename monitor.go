@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/subtle"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -260,6 +259,8 @@ var dashboardCSS string
 var settingsJS string
 
 func dashboardHandler(c agentConfig, p *provider) http.Handler {
+	sessions := dashboardSessions{items: make(map[string]dashboardSession)}
+	origin := http.NewCrossOriginProtection()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/settings", p.settingsHandler)
 	mux.HandleFunc("/dashboard.js", func(w http.ResponseWriter, r *http.Request) {
@@ -288,11 +289,41 @@ func dashboardHandler(c agentConfig, p *provider) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		c := p.config()
+		switch r.URL.Path {
+		case "/login", "/logout":
+			if err := origin.Check(r); err != nil {
+				http.Error(w, "跨站请求已拒绝", http.StatusForbidden)
+				return
+			}
+			if r.URL.Path == "/login" {
+				sessions.login(w, r, c)
+				return
+			}
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", "POST")
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			sessions.remove(r)
+			setDashboardCookie(w, r, "", -1)
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		hasSession := sessions.valid(r, c)
+		if r.URL.Path == "/" && !hasSession && r.Method == http.MethodGet {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
 		user, pass, ok := r.BasicAuth()
-		if !ok || c.User == "" || c.Password == "" || subtle.ConstantTimeCompare([]byte(user+":"+pass), []byte(c.User+":"+c.Password)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Basic realm="CloudProxy", charset="UTF-8"`)
+		if !hasSession && !(ok && validCredentials(c, user, pass)) {
+			// Explicit Basic credentials remain supported for local health and API clients.
+			// Only challenge a client which already opted in to Basic authentication.
+			if ok {
+				w.Header().Set("WWW-Authenticate", `Basic realm="CloudProxy", charset="UTF-8"`)
+			}
 			http.Error(w, "Authentication required", 401)
 			return
 		}

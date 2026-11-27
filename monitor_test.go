@@ -82,7 +82,7 @@ func TestDashboardAuthenticationAndSafeJSON(t *testing.T) {
 	c, p := setupTest(t)
 	p.connections.begin("<script>alert(1)</script>", "SOCKS5").finish(fmt.Errorf("%s %s %s", c.Password, c.Token, c.Nodes[0].URL))
 	h := dashboardHandler(c, p)
-	for _, path := range []string{"/", "/api/connections", "/api/stats"} {
+	for _, path := range []string{"/api/connections", "/api/stats"} {
 		r := httptest.NewRequest("GET", path, nil)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)

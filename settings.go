@@ -123,10 +123,10 @@ func validateSettings(s runtimeSettings) error {
 		if len(n.Region) > 128 || n.Region == "" || len(n.Token) > 256 || len(n.QuotaGroup) > 128 || strings.ContainsAny(n.Region+n.QuotaGroup+n.Token, "\r\n\x00") {
 			return fmt.Errorf("节点名称不能为空，令牌最长 256 字节")
 		}
-		if n.provider() != "tencent" && n.provider() != "cloudflare" && n.provider() != "custom" {
+		if !n.knownProvider() {
 			return fmt.Errorf("不支持的节点平台")
 		}
-		if n.provider() == "custom" && n.Rates == nil {
+		if n.needsExplicitRates() && n.Rates == nil {
 			return fmt.Errorf("其他平台节点必须填写自己的费用模型，不能默认为免费")
 		}
 		if n.Rates != nil && !n.Rates.valid() {

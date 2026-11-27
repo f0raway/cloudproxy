@@ -8,20 +8,21 @@ cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据�
 | --- | --- | --- | --- |
 | 腾讯云 SCF Web 函数 | 腾讯云 SCF | `deploy/deploy.py` + Go 节点 | 内置参考单价，可覆盖 |
 | Cloudflare Workers | Cloudflare Workers Free | `deploy/cloudflare.py` + Worker 代码 | 本地零单价模型，另有限额保护 |
+| 腾讯云 EdgeOne / 阿里云 ESA | 腾讯 EdgeOne / 阿里云 ESA · 兼容节点 | 添加现有协议 2 端点；不自动部署 | 必须明确填写三项单价 |
 | 其他云函数、容器或自建服务 | 通用 WSS/TCP | 自行部署 Go `-node` 或实现协议 2 | 必须明确填写三项单价 |
 
 这里的“支持其他平台”表示可以接入兼容节点，不表示仓库已有每家厂商的自动部署器。云平台还可能限制 TCP 目标、WebSocket、连接寿命、并发或出口地址；请先验证平台能力。官方文档入口：Cloudflare 的 TCP sockets 文档、腾讯云 SCF Web 函数文档。
 
 ### 腾讯云 EdgeOne（EO）与阿里云 ESA
 
-两家都有免费额度，但尚未验证它们的免费边缘函数能作为本项目的原生 TCP 出口，不提供内置适配或自动部署。
+两家都有免费额度，但尚未验证它们的免费边缘函数能作为本项目的原生 TCP 出口。目前的 `edgeone`、`esa` 类型复用协议 2 客户端，不提供云端运行时适配或自动部署。作为对照，[Cloudflare Workers 明确提供 `connect()` 出站 TCP API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
 
 | 平台 | 接入前需要确认 |
 | --- | --- |
-| 腾讯云 EdgeOne | [Edge Functions](https://cloud.tencent.com/document/product/1552/127416) 列出的 `fetch` 是 HTTP 请求能力，不是 TCP socket。Makers 的 Node.js Cloud Functions 是[另一种运行时](https://cloud.tencent.com/document/product/1552/127415)，不能据此判断免费 Edge Functions 兼容。检查[实际套餐](https://cloud.tencent.com/document/product/1552/94165)。 |
+| 腾讯云 EdgeOne | [Edge Functions](https://cloud.tencent.com/document/product/1552/127416) 列出的 `fetch` 是 HTTP 请求能力，不是 TCP socket。Makers 的 Node.js Cloud Functions 是[另一种运行时](https://cloud.tencent.com/document/product/1552/127415)，其[官方 WebSocket 示例](https://github.com/TencentEdgeOne/pages-websocket)验证的是 WebSocket 服务示例，不是免费 Edge Functions 的 TCP 隧道。检查[实际套餐](https://cloud.tencent.com/document/product/1552/94165)。 |
 | 阿里云 ESA | [函数 RuntimeAPI 手册](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/runtimeapi-manual) 未列出原始 TCP 出站 API。站点的 WebSocket 回源也不等于函数能拨号到任意目标；[站点网络优化文档](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/network-optimization)说明免费站点不能开启该功能。函数的免费额度见[计费说明](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/functions-and-pages-billing)。 |
 
-若目标运行时实测满足下文的全部协议要求，选“通用 WSS/TCP”接入，并按实际套餐填写费率。若使用厂商回源转发到自建节点，TCP 出口是自建节点，而非边缘函数；仍需核对回源套餐与自建成本。
+若目标运行时实测满足下文的全部协议要求，选择对应的“兼容节点”类型接入，并按实际套餐填写费率。若使用厂商回源转发到自建节点，TCP 出口是自建节点，而非边缘函数；仍需核对回源套餐与自建成本。
 
 ## 上游必须具备的能力
 
