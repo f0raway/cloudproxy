@@ -34,7 +34,7 @@ def check(config_path):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=5) as response:
         stats = json.load(response)
-    if not stats.get("nodes") or stats.get("mode") != "tcp-tunnel-no-mitm":
+    if not isinstance(stats.get("nodes"), list) or stats.get("mode") != "tcp-tunnel-no-mitm":
         raise ValueError("invalid local status")
     for key in ("http_addr", "socks_addr"):
         with socket.create_connection(address(config[key]), timeout=5):

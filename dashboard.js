@@ -43,7 +43,7 @@ function renderPool(s){
  const n=s.eligible_nodes??0;
  $('nodeSummary').textContent=s.nodes.length+' 个节点 · '+s.enabled_nodes+' 个启用 · '+n+' 个可尝试';
  $('poolHealth').textContent=n?'入口运行中 · '+n+' 个节点可尝试':'入口运行中 · 暂无可选上游';
- $('poolHealthDetail').textContent=n?'已启用 '+s.enabled_nodes+' 个节点，其中零单价 '+s.free_nodes+' 个、有费用 '+s.paid_nodes+' 个。目标可达性以连接明细为准。':'请检查节点启停、冷却、额度和费用设置。重启入口不能解决所有上游限制。';
+ $('poolHealthDetail').textContent=!s.nodes.length?'尚未配置上游。请到「设置 → 上游配置」添加兼容节点；目前不能转发流量。':n?'已启用 '+s.enabled_nodes+' 个节点，其中零单价 '+s.free_nodes+' 个、有费用 '+s.paid_nodes+' 个。目标可达性以连接明细为准。':'请检查节点启停、冷却、额度和费用设置。重启入口不能解决所有上游限制。';
  $('poolHealth').closest('section').className='health-panel '+(s.readiness||'');
  const seconds=s.uptime_seconds||0; $('uptime').textContent='本次连续运行 '+Math.floor(seconds/86400)+' 天 '+Math.floor(seconds%86400/3600)+' 小时 '+Math.floor(seconds%3600/60)+' 分钟';
  $('buildVersion').textContent='版本 '+(s.version||'未知');

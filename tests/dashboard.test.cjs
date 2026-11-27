@@ -31,6 +31,12 @@ test('pool distinguishes local uptime, selectable nodes and successful upstream 
  vm.runInContext('renderPool(stats)',ctx);assert.match(get('poolHealth').textContent,/暂无可选/);assert.match(get('uptime').textContent,/1 天 1 小时 1 分钟/);assert.match(get('nodes').children[0].children[1].textContent,/尚未验证/);
  ctx.stats.eligible_nodes=1;ctx.stats.readiness='ready';ctx.stats.nodes[0].status='Healthy';ctx.stats.nodes[0].last_success_at=new Date().toISOString();vm.runInContext('renderPool(stats)',ctx);assert.match(get('poolHealth').textContent,/1 个节点可尝试/);assert.match(get('nodes').children[0].children[3].textContent,/最近成功/);
 });
+test('empty pool explains why a running local entry cannot forward traffic',()=>{
+ const {ctx,get}=page();ctx.stats={readiness:'blocked',eligible_nodes:0,enabled_nodes:0,nodes:[]};
+ vm.runInContext('renderPool(stats)',ctx);
+ assert.match(get('poolHealthDetail').textContent,/尚未配置上游.*不能转发/);
+ assert.equal(get('nodes').children.length,0);
+});
 test('settings script initializes and navigation opens the editable page',()=>{
  const {ctx,get}=page();ctx.window={addEventListener(){},confirm(){return false}};
  vm.runInContext(fs.readFileSync('settings.js','utf8'),ctx);

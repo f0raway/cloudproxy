@@ -107,8 +107,8 @@ func validateSettings(s runtimeSettings) error {
 	if s.CFDaily < 0 || s.CFDaily > 100000 {
 		return fmt.Errorf("Cloudflare 本地每日限额需为 0–100000")
 	}
-	if len(s.Nodes) < 1 || len(s.Nodes) > 64 {
-		return fmt.Errorf("需保留 1–64 个节点，可停用节点以暂停使用")
+	if s.Nodes == nil || len(s.Nodes) > 64 {
+		return fmt.Errorf("请提供 0–64 个节点的列表；空列表表示不启用转发")
 	}
 	seenURLs := map[string]bool{}
 	for _, n := range s.Nodes {

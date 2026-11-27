@@ -12,6 +12,17 @@ cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据�
 
 这里的“支持其他平台”表示可以接入兼容节点，不表示仓库已有每家厂商的自动部署器。云平台还可能限制 TCP 目标、WebSocket、连接寿命、并发或出口地址；请先验证平台能力。官方文档入口：Cloudflare 的 TCP sockets 文档、腾讯云 SCF Web 函数文档。
 
+### 腾讯云 EdgeOne（EO）与阿里云 ESA
+
+两家都有免费额度，但尚未验证它们的免费边缘函数能作为本项目的原生 TCP 出口，不提供内置适配或自动部署。
+
+| 平台 | 接入前需要确认 |
+| --- | --- |
+| 腾讯云 EdgeOne | [Edge Functions](https://cloud.tencent.com/document/product/1552/127416) 列出的 `fetch` 是 HTTP 请求能力，不是 TCP socket。Makers 的 Node.js Cloud Functions 是[另一种运行时](https://cloud.tencent.com/document/product/1552/127415)，不能据此判断免费 Edge Functions 兼容。检查[实际套餐](https://cloud.tencent.com/document/product/1552/94165)。 |
+| 阿里云 ESA | [函数 RuntimeAPI 手册](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/runtimeapi-manual) 未列出原始 TCP 出站 API。站点的 WebSocket 回源也不等于函数能拨号到任意目标；[站点网络优化文档](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/network-optimization)说明免费站点不能开启该功能。函数的免费额度见[计费说明](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/functions-and-pages-billing)。 |
+
+若目标运行时实测满足下文的全部协议要求，选“通用 WSS/TCP”接入，并按实际套餐填写费率。若使用厂商回源转发到自建节点，TCP 出口是自建节点，而非边缘函数；仍需核对回源套餐与自建成本。
+
 ## 上游必须具备的能力
 
 1. 提供有效证书保护的 `wss://主机/tunnel`，允许升级为 WebSocket。

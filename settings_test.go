@@ -39,6 +39,36 @@ func settingsRequest(t *testing.T, h http.Handler, c agentConfig, s runtimeSetti
 	h.ServeHTTP(w, r)
 	return w
 }
+
+func TestExplicitEmptyPoolCanStartAndBeConfigured(t *testing.T) {
+	c, p := setupTest(t)
+	h := dashboardHandler(c, p)
+	s := editableSettings(p)
+	s.Nodes = nil
+	if w := settingsRequest(t, h, c, s, p.csrf, ""); w.Code != 400 {
+		t.Fatalf("null node list returned %d", w.Code)
+	}
+	s.Nodes = []nodeConfig{}
+	if w := settingsRequest(t, h, c, s, p.csrf, ""); w.Code != 200 {
+		t.Fatalf("empty node list returned %d: %s", w.Code, w.Body.String())
+	}
+	reloaded, err := readSettings(c)
+	if err != nil || reloaded.Nodes == nil || len(reloaded.Nodes) != 0 {
+		t.Fatalf("could not reload explicit empty node list: %v", err)
+	}
+	empty, err := newProvider(reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer empty.cancel()
+	if stats := empty.stats(); stats["readiness"] != "blocked" || stats["eligible_nodes"] != 0 || empty.next(nil) != nil {
+		t.Fatal("empty pool was eligible for forwarding")
+	}
+	s.Nodes = []nodeConfig{{Provider: "custom", Region: "new", URL: "wss://node.example/tunnel", Token: "test-node-token", Rates: &costRates{}}}
+	if w := settingsRequest(t, dashboardHandler(reloaded, empty), reloaded, s, empty.csrf, ""); w.Code != 200 || empty.next(nil) == nil {
+		t.Fatalf("could not configure a compatible node: %d %s", w.Code, w.Body.String())
+	}
+}
 func TestSettingsPrivateAuthenticatedAndCSRFSafe(t *testing.T) {
 	c, p := setupTest(t)
 	h := dashboardHandler(c, p)

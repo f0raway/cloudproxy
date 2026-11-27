@@ -104,7 +104,7 @@ type provider struct {
 }
 
 func newProvider(c agentConfig) (*provider, error) {
-	if len(c.Nodes) == 0 {
+	if c.Nodes == nil {
 		return nil, fmt.Errorf("missing tunnel nodes")
 	}
 	if err := validateNodeTokens(c); err != nil {

@@ -41,7 +41,7 @@ class WatchdogTests(unittest.TestCase):
                     return
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b'{"nodes":[{}],"mode":"tcp-tunnel-no-mitm"}')
+                self.wfile.write(b'{"nodes":[],"mode":"tcp-tunnel-no-mitm","readiness":"blocked"}')
             def log_message(self, *args):
                 pass
         with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as stack:
