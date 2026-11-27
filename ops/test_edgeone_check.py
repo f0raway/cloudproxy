@@ -33,7 +33,7 @@ class EdgeOneCheckTests(unittest.TestCase):
                 edgeone.deploy("edgeone", "cloudproxy-test", "overseas")
                 self.assertIn("--mode", run.call_args_list[0].args[0])
                 self.assertIn("overseas", run.call_args_list[0].args[0])
-            saved = Path(directory) / "edgeone-access.json"
+            saved = Path(directory) / "edgeone-agent-access.json"
             self.assertEqual(json.loads(saved.read_text()), record)
             self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
 

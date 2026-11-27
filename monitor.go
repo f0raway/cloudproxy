@@ -62,7 +62,7 @@ type connectionContextKey struct{}
 func newConnectionLog(c agentConfig) *connectionLog {
 	secrets := []string{c.Password, c.Token}
 	for _, n := range c.Nodes {
-		secrets = append(secrets, n.URL, n.Token)
+		secrets = append(secrets, n.URL, n.Token, n.AccessCookie)
 	}
 	return &connectionLog{active: make(map[uint64]*connectionEvent), secrets: secrets}
 }
@@ -374,7 +374,7 @@ func (l *connectionLog) addSecrets(c agentConfig) {
 	defer l.secretsMu.Unlock()
 	values := []string{c.Password, c.Token}
 	for _, n := range c.Nodes {
-		values = append(values, n.URL, n.Token)
+		values = append(values, n.URL, n.Token, n.AccessCookie)
 	}
 	for _, v := range values {
 		if v == "" {

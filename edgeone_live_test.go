@@ -1,60 +1,49 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
+	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-// Requires a separately authorized deployment. Credentials are supplied only
+// Requires an explicitly authorized deployment. Credentials are supplied only
 // through the caller's environment and are never saved in deployment output.
-func TestEdgeOneLiveTCP(t *testing.T) {
-	address, token := os.Getenv("EDGEONE_LIVE_URL"), os.Getenv("EDGEONE_LIVE_TOKEN")
+func TestEdgeOneAgentLiveHTTPS(t *testing.T) {
+	address, token := os.Getenv("EDGEONE_AGENT_URL"), os.Getenv("EDGEONE_LIVE_TOKEN")
 	if address == "" || token == "" {
-		t.Skip("set EDGEONE_LIVE_URL and EDGEONE_LIVE_TOKEN to verify an authorized deployment")
+		t.Skip("set EDGEONE_AGENT_URL and EDGEONE_LIVE_TOKEN to verify an authorized deployment")
 	}
-	headers := http.Header{
-		"X-Tunnel-Token":    []string{token},
-		"X-Tunnel-Target":   []string{"example.com:80"},
-		"X-Tunnel-Protocol": []string{"2"},
+	node := nodeConfig{Provider: "edgeone", URL: address, AccessCookie: os.Getenv("EDGEONE_ACCESS_COOKIE")}
+	stream, err := openHTTPStream(context.Background(), agentConfig{}, node, "example.com:443", token)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cookie := os.Getenv("EDGEONE_ACCESS_COOKIE"); cookie != "" {
-		headers.Set("Cookie", cookie)
+	defer stream.Close()
+	if err = stream.SetDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		t.Fatal(err)
 	}
-	ws, response, err := (&websocket.Dialer{HandshakeTimeout: 20 * time.Second}).Dial(address, headers)
+	tlsConn := tls.Client(stream, &tls.Config{ServerName: "example.com", MinVersion: tls.VersionTLS12})
+	if err = tlsConn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	if err = tlsConn.VerifyHostname("example.com"); err != nil {
+		t.Fatal("upstream replaced the target certificate:", err)
+	}
+	if _, err = fmt.Fprint(tlsConn, "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(tlsConn), &http.Request{Method: http.MethodGet})
 	if err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
-	defer ws.Close()
-	if err = ws.WriteMessage(websocket.BinaryMessage, []byte("GET / HTTP/1.0\r\nHost: example.com\r\nConnection: close\r\n\r\n")); err != nil {
-		t.Fatal(err)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected target status: %s", response.Status)
 	}
-	for {
-		kind, data, err := ws.ReadMessage()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if kind == websocket.TextMessage {
-			if string(data) == "EOF" {
-				t.Fatal("target returned EOF before an HTTP response")
-			}
-			var ack dialAck
-			if err = json.Unmarshal(data, &ack); err != nil || !ack.OK {
-				t.Fatal(fmt.Errorf("tunnel rejected: %s (%v)", data, err))
-			}
-			continue
-		}
-		if !strings.HasPrefix(string(data), "HTTP/1.") {
-			t.Fatalf("unexpected TCP bytes: %q", data[:min(len(data), 80)])
-		}
-		t.Log("EdgeOne Makers Cloud Function established a raw TCP tunnel and returned the target HTTP response")
-		return
-	}
+	t.Log("EdgeOne Agent completed TLS with the target certificate and returned an HTTPS response")
 }

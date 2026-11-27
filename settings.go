@@ -120,7 +120,7 @@ func validateSettings(s runtimeSettings) error {
 		if e != nil || u.Scheme != "wss" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || len(n.URL) > 2048 {
 			return fmt.Errorf("节点地址必须是无账号、查询参数的 wss:// 地址")
 		}
-		if len(n.Region) > 128 || n.Region == "" || len(n.Token) > 256 || len(n.QuotaGroup) > 128 || strings.ContainsAny(n.Region+n.QuotaGroup+n.Token, "\r\n\x00") {
+		if len(n.Region) > 128 || n.Region == "" || len(n.Token) > 256 || len(n.AccessCookie) > 4096 || len(n.QuotaGroup) > 128 || strings.ContainsAny(n.Region+n.QuotaGroup+n.Token+n.AccessCookie, "\r\n\x00") {
 			return fmt.Errorf("节点名称不能为空，令牌最长 256 字节")
 		}
 		if !n.knownProvider() {
@@ -214,7 +214,7 @@ func (p *provider) config() agentConfig { return *p.configValue.Load() }
 
 // Compare effective defaults, since the UI may make implicit provider/rates explicit.
 func sameNodeConfig(a, b nodeConfig) bool {
-	return a.provider() == b.provider() && a.URL == b.URL && a.Token == b.Token && a.Region == b.Region && a.Disabled == b.Disabled && a.quotaGroup() == b.quotaGroup() && a.rates() == b.rates()
+	return a.provider() == b.provider() && a.URL == b.URL && a.Token == b.Token && a.AccessCookie == b.AccessCookie && a.Region == b.Region && a.Disabled == b.Disabled && a.quotaGroup() == b.quotaGroup() && a.rates() == b.rates()
 }
 func (p *provider) saveSettings(s runtimeSettings) error {
 	p.settingsMu.Lock()
@@ -224,10 +224,15 @@ func (p *provider) saveSettings(s runtimeSettings) error {
 		s.Password = current.Password
 	}
 	for i := range s.Nodes {
-		if s.Nodes[i].Token == "" {
+		if s.Nodes[i].Token == "" || s.Nodes[i].AccessCookie == "" {
 			for _, old := range current.Nodes {
 				if old.URL == s.Nodes[i].URL {
-					s.Nodes[i].Token = old.Token
+					if s.Nodes[i].Token == "" {
+						s.Nodes[i].Token = old.Token
+					}
+					if s.Nodes[i].AccessCookie == "" {
+						s.Nodes[i].AccessCookie = old.AccessCookie
+					}
 					break
 				}
 			}
@@ -303,6 +308,7 @@ func (p *provider) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		s.Nodes = append([]nodeConfig{}, s.Nodes...)
 		for i := range s.Nodes {
 			s.Nodes[i].Token = ""
+			s.Nodes[i].AccessCookie = ""
 		}
 		json.NewEncoder(w).Encode(map[string]any{"settings": s, "csrf_token": p.csrf, "password_set": true, "note": "保存即时生效；已有 TCP 连接保持不变。Cloudflare 限额仅统计本入口，不代表账号剩余额度。"})
 		return

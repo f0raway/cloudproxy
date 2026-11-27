@@ -8,7 +8,7 @@ cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据�
 | --- | --- | --- | --- |
 | 腾讯云 SCF Web 函数 | 腾讯云 SCF | `deploy/deploy.py` + Go 节点 | 内置参考单价，可覆盖 |
 | Cloudflare Workers | Cloudflare Workers Free | `deploy/cloudflare.py` + Worker 代码 | 本地零单价模型，另有限额保护 |
-| 腾讯云 EdgeOne | 腾讯 EdgeOne · 兼容节点 | `ops/edgeone_check.py` + 实验 Cloud Functions；当前云端验证未通过 | 必须明确填写三项单价 |
+| 腾讯云 EdgeOne Makers Agents | 腾讯 EdgeOne | `ops/edgeone_check.py` + 会话式 Agent（协议 5） | 免费 Agents 可明确填 0；其他套餐按实际单价 |
 | 阿里云 ESA | 阿里云 ESA · 兼容节点 | 添加现有协议 2 端点；不自动部署 | 必须明确填写三项单价 |
 | 其他云函数、容器或自建服务 | 通用 WSS/TCP | 自行部署 Go `-node` 或实现协议 2 | 必须明确填写三项单价 |
 
@@ -16,11 +16,11 @@ cloudproxy 提供统一的 HTTP CONNECT、HTTP 和 SOCKS5 入口。接入依据�
 
 ### 腾讯云 EdgeOne（EO）与阿里云 ESA
 
-两家都是核心免费上游方向，但目前尚未完成可用的原生 TCP 验证。`edgeone`、`esa` 类型复用协议 2 客户端；EdgeOne 另有实验部署器。完整额度、限制、凭据与实测结果见[三大免费上游](EDGE_UPSTREAMS.md)。作为对照，[Cloudflare Workers 明确提供 `connect()` 出站 TCP API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
+Cloudflare 与 EdgeOne 已完成真实 TLS/HTTPS 验证，ESA 尚待原生能力依据。`edgeone` 使用协议 5 和 Agents 会话粘性，`esa` 复用协议 2 客户端。完整额度、限制、凭据与实测结果见[三大免费上游](EDGE_UPSTREAMS.md)。
 
 | 平台 | 接入前需要确认 |
 | --- | --- |
-| 腾讯云 EdgeOne | [Edge Functions](https://cloud.tencent.com/document/product/1552/127416) 列出的 `fetch` 是 HTTP 请求能力，不是 TCP socket。Makers 的 Node.js Cloud Functions 是[另一种运行时](https://cloud.tencent.com/document/product/1552/127415)，其[官方 WebSocket 示例](https://github.com/TencentEdgeOne/pages-websocket)验证的是 WebSocket 服务示例，不是免费 Edge Functions 的 TCP 隧道。检查[实际套餐](https://cloud.tencent.com/document/product/1552/94165)。 |
+| 腾讯云 EdgeOne | 使用 [Agents 会话模式](https://cloud.tencent.com/document/product/1552/132759)保证同一会话路由到同一实例，保留 TCP socket。普通 Edge Functions 的 HTTP `fetch` 和无状态 Cloud Functions 都不是本适配的替代品。 |
 | 阿里云 ESA | [函数 RuntimeAPI 手册](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/runtimeapi-manual) 未列出原始 TCP 出站 API。站点的 WebSocket 回源也不等于函数能拨号到任意目标；[站点网络优化文档](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/network-optimization)说明免费站点不能开启该功能。函数的免费额度见[计费说明](https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/functions-and-pages-billing)。 |
 
 若目标运行时实测满足下文的全部协议要求，选择对应的“兼容节点”类型接入，并按实际套餐填写费率。若使用厂商回源转发到自建节点，TCP 出口是自建节点，而非边缘函数；仍需核对回源套餐与自建成本。

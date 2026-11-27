@@ -23,6 +23,7 @@ type wsStream struct {
 	firstFailure  error
 	closing       atomic.Bool
 	c             *websocket.Conn
+	raw           net.Conn
 	reader        io.Reader
 	writeMu       sync.Mutex
 	nextWrite     time.Time
@@ -37,6 +38,12 @@ type wsStream struct {
 func newStream(c *websocket.Conn) *wsStream {
 	c.SetReadLimit(256 * 1024)
 	s := &wsStream{c: c, maxBytes: maxTunnelBytes, writeInterval: 150 * time.Millisecond}
+	s.lastActivity.Store(time.Now().UnixNano())
+	return s
+}
+
+func newRawStream(c net.Conn) *wsStream {
+	s := &wsStream{raw: c, maxBytes: maxTunnelBytes}
 	s.lastActivity.Store(time.Now().UnixNano())
 	return s
 }
@@ -59,6 +66,18 @@ func (s *wsStream) Read(p []byte) (n int, err error) {
 			s.setFailure(err)
 		}
 	}()
+	if s.raw != nil {
+		n, err = s.raw.Read(p)
+		if n > 0 {
+			if e := s.account(n); e != nil {
+				return 0, e
+			}
+			if s.onTraffic != nil {
+				s.onTraffic(0, n)
+			}
+		}
+		return n, err
+	}
 	for {
 		if s.reader != nil {
 			n, err := s.reader.Read(p)
@@ -104,6 +123,18 @@ func (s *wsStream) Write(p []byte) (n int, err error) {
 	}()
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.raw != nil {
+		n, err = s.raw.Write(p)
+		if n > 0 {
+			if e := s.account(n); e != nil {
+				return n, e
+			}
+			if s.onTraffic != nil {
+				s.onTraffic(n, 0)
+			}
+		}
+		return n, err
+	}
 	total := 0
 	for len(p) > 0 {
 		n := len(p)
@@ -133,12 +164,23 @@ func (s *wsStream) Write(p []byte) (n int, err error) {
 func (s *wsStream) CloseWrite() error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.raw != nil {
+		if half, ok := s.raw.(interface{ CloseWrite() error }); ok {
+			return half.CloseWrite()
+		}
+		return errors.New("upstream does not support half-close")
+	}
 	s.c.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return s.c.WriteMessage(websocket.TextMessage, []byte("EOF"))
 }
 func (s *wsStream) Close() error {
 	s.closing.Store(true)
-	err := s.c.Close()
+	var err error
+	if s.raw != nil {
+		err = s.raw.Close()
+	} else {
+		err = s.c.Close()
+	}
 	s.closeOnce.Do(func() {
 		if s.onClose != nil {
 			s.onClose()
@@ -146,16 +188,39 @@ func (s *wsStream) Close() error {
 	})
 	return err
 }
-func (s *wsStream) LocalAddr() net.Addr  { return s.c.LocalAddr() }
-func (s *wsStream) RemoteAddr() net.Addr { return s.c.RemoteAddr() }
+func (s *wsStream) LocalAddr() net.Addr {
+	if s.raw != nil {
+		return s.raw.LocalAddr()
+	}
+	return s.c.LocalAddr()
+}
+func (s *wsStream) RemoteAddr() net.Addr {
+	if s.raw != nil {
+		return s.raw.RemoteAddr()
+	}
+	return s.c.RemoteAddr()
+}
 func (s *wsStream) SetDeadline(t time.Time) error {
+	if s.raw != nil {
+		return s.raw.SetDeadline(t)
+	}
 	if err := s.c.SetReadDeadline(t); err != nil {
 		return err
 	}
 	return s.c.SetWriteDeadline(t)
 }
-func (s *wsStream) SetReadDeadline(t time.Time) error  { return s.c.SetReadDeadline(t) }
-func (s *wsStream) SetWriteDeadline(t time.Time) error { return s.c.SetWriteDeadline(t) }
+func (s *wsStream) SetReadDeadline(t time.Time) error {
+	if s.raw != nil {
+		return s.raw.SetReadDeadline(t)
+	}
+	return s.c.SetReadDeadline(t)
+}
+func (s *wsStream) SetWriteDeadline(t time.Time) error {
+	if s.raw != nil {
+		return s.raw.SetWriteDeadline(t)
+	}
+	return s.c.SetWriteDeadline(t)
+}
 
 // relay preserves TCP half-close and never reconnects an established session.
 func relay(raw net.Conn, s *wsStream) {

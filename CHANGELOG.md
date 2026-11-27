@@ -3,13 +3,14 @@
 ## 未发布
 
 - 明确 Cloudflare、EdgeOne 与 ESA 三大免费上游方向，在设置中列出各自额度、限制与部署指南。
-- 新增 EdgeOne Makers Node.js Cloud Functions 实验适配、私有部署工具及云端 TCP 验证；HTTP 部署成功，但本实现和腾讯官方 WebSocket 示例均出现帧链路断开，不启用为可用上游。
+- 新增 EdgeOne Makers Agents 原生上游：会话粘性、后台建连、SSE 二进制下行、重复上行、EOF 与私网目标拒绝；移除不兼容的 WebSocket 和无状态会话实验路线。
+- 实际验证 EdgeOne 的 HTTP 代理、SOCKS5 和连续 HTTPS 请求，目标证书校验通过；本地双工、超时与 SOCKS5 地址兼容性均有回归测试。
 - 补充 ESA 的 AK/SK 官方 CLI 部署方式与 Credits/旧免费模式区别，不用 HTTP fetch 冒充 TCP。
 
 - 控制台增加独立登录页和退出登录，复用现有代理账号；健康检查仍使用 Basic 认证。
-- 增加 EdgeOne 与 ESA 的兼容节点类型，仅登记已有协议 2 端点，不自动部署或假定免费。
+- 增加 EdgeOne 原生节点和 ESA 兼容节点类型；ESA 仅登记已有协议 2 端点，不自动部署或假定免费。
 - 本地入口可用显式空节点列表启动和配置，不会直接转发流量；健康检查区分本地运行与上游就绪。
-- 控制台和接入文档说明腾讯云 EdgeOne 与阿里云 ESA 免费边缘函数尚未验证的 TCP 能力和通用节点接入条件。
+- 控制台和接入文档区分已验证的 EdgeOne Agent 与尚待能力验证的阿里云 ESA；预览访问 Cookie 不回显并脱敏。
 
 ## 2026-11-17 · cloudproxy 项目名称与界面文档
 

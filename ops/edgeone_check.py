@@ -27,12 +27,12 @@ def node_token(cli, project):
         private_write(path, secrets.token_urlsafe(48))
     token = path.read_text().strip()
     subprocess.run([cli, "makers", "env", "set", "CLOUDPROXY_NODE_TOKEN", token, "-e", "production"],
-                   cwd=Path(__file__).parent.parent / "workers/edgeone", capture_output=True, text=True, check=True)
+                   cwd=Path(__file__).parent.parent / "workers/edgeone-agent", capture_output=True, text=True, check=True)
     return token
 
 
 def deploy(cli, project, area):
-    directory = Path(__file__).parent.parent / "workers/edgeone"
+    directory = Path(__file__).parent.parent / "workers/edgeone-agent"
     private_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
     subprocess.run([cli, "makers", "link", "-n", project, "-a", area, "--mode", "auto", "--skip-env-sync", "--json"],
                    cwd=directory, capture_output=True, text=True, check=True)
@@ -44,7 +44,7 @@ def deploy(cli, project, area):
     record = json.loads(result.stdout.strip().splitlines()[-1])
     if record.get("status") != "success":
         raise RuntimeError("EdgeOne deployment did not succeed")
-    private_write(private_dir() / "edgeone-access.json", json.dumps(record))
+    private_write(private_dir() / "edgeone-agent-access.json", json.dumps(record))
     print("EdgeOne deployment succeeded; checking TCP separately")
 
 
@@ -61,20 +61,20 @@ def cookies(url):
 
 
 def check(path):
-    access = json.loads((private_dir() / "edgeone-access.json").read_text())
+    access = json.loads((private_dir() / "edgeone-agent-access.json").read_text())
     parsed = urlsplit(access["url"])
     env = dict(os.environ)
-    env["EDGEONE_LIVE_URL"] = urlunsplit(("wss", parsed.netloc, path, "", ""))
+    env["EDGEONE_AGENT_URL"] = urlunsplit(("wss", parsed.netloc, path, "", ""))
     env["EDGEONE_LIVE_TOKEN"] = (private_dir() / "edgeone-node-token").read_text().strip()
     env["EDGEONE_ACCESS_COOKIE"] = cookies(access["url"])
-    subprocess.run(["go", "test", "-run", "^TestEdgeOneLiveTCP$", "-v", "-count=1", "."],
+    subprocess.run(["go", "test", "-run", "^TestEdgeOneAgentLiveHTTPS$", "-v", "-count=1", "."],
                    cwd=Path(__file__).parent.parent, env=env, check=True)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deploy", action="store_true")
-    parser.add_argument("--project", default="cloudproxy-node")
+    parser.add_argument("--project", default="cloudproxy-agent-stream")
     parser.add_argument("--path", default="/tunnel")
     parser.add_argument("--area", default="global", choices=("global", "overseas"))
     parser.add_argument("--cli", default=os.environ.get("EDGEONE_CLI", "edgeone"))

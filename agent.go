@@ -27,15 +27,16 @@ func (e *targetDialError) Error() string { return "target connection failed: " +
 type nodeConfig struct {
 	// Deployment metadata emitted by earlier releases; runtime limits and billing
 	// remain controlled by the tunnel protocol and explicit rates.
-	Memory     int        `json:"memory,omitempty"`
-	Timeout    int        `json:"timeout,omitempty"`
-	Provider   string     `json:"provider,omitempty"`
-	Disabled   bool       `json:"disabled,omitempty"`
-	Token      string     `json:"token,omitempty"`
-	QuotaGroup string     `json:"quota_group,omitempty"`
-	Rates      *costRates `json:"rates,omitempty"`
-	Region     string     `json:"region"`
-	URL        string     `json:"url"`
+	Memory       int        `json:"memory,omitempty"`
+	Timeout      int        `json:"timeout,omitempty"`
+	Provider     string     `json:"provider,omitempty"`
+	Disabled     bool       `json:"disabled,omitempty"`
+	Token        string     `json:"token,omitempty"`
+	AccessCookie string     `json:"access_cookie,omitempty"`
+	QuotaGroup   string     `json:"quota_group,omitempty"`
+	Rates        *costRates `json:"rates,omitempty"`
+	Region       string     `json:"region"`
+	URL          string     `json:"url"`
 }
 type agentConfig struct {
 	Logging        *logConfig   `json:"logging,omitempty"`
@@ -330,36 +331,45 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 		if nodeToken == "" {
 			nodeToken = p.token
 		}
-		headers := http.Header{"X-Tunnel-Token": []string{nodeToken}, "X-Tunnel-Target": []string{address}, "X-Tunnel-Protocol": []string{"2"}}
-		dialer := websocket.Dialer{HandshakeTimeout: 25 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Proxy: nil, NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			switch p.config().NodeNetwork {
-			case "ipv4":
-				network = "tcp4"
-			case "ipv6":
-				network = "tcp6"
-			}
-			return (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
-		}}
-		ws, response, e := dialer.DialContext(ctx, n.URL, headers)
-		if e == nil {
-			ws.SetReadLimit(2048)
-			ws.SetReadDeadline(time.Now().Add(15 * time.Second))
-			var ack dialAck
-			stopAck := context.AfterFunc(ctx, func() { ws.Close() })
-			e = ws.ReadJSON(&ack)
-			stopAck()
-			ws.SetReadDeadline(time.Time{})
-			if e == nil && !ack.OK {
-				if ack.Error == "unsupported" {
-					e = &providerTargetError{detail: ack.Detail}
-				} else if ack.Error == "target" {
-					e = &targetDialError{detail: ack.Detail}
-				} else {
-					e = fmt.Errorf("invalid tunnel connection acknowledgement")
+		var response *http.Response
+		var stream *wsStream
+		if n.provider() == "edgeone" {
+			stream, e = openHTTPStream(ctx, p.config(), n.nodeConfig, address, nodeToken)
+		} else {
+			headers := http.Header{"X-Tunnel-Token": []string{nodeToken}, "X-Tunnel-Target": []string{address}, "X-Tunnel-Protocol": []string{"2"}}
+			dialer := websocket.Dialer{HandshakeTimeout: 25 * time.Second, ReadBufferSize: chunkSize, WriteBufferSize: chunkSize, Proxy: nil, NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				switch p.config().NodeNetwork {
+				case "ipv4":
+					network = "tcp4"
+				case "ipv6":
+					network = "tcp6"
 				}
-			}
-			if e != nil {
-				ws.Close()
+				return (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext(ctx, network, address)
+			}}
+			var ws *websocket.Conn
+			ws, response, e = dialer.DialContext(ctx, n.URL, headers)
+			if e == nil {
+				ws.SetReadLimit(2048)
+				ws.SetReadDeadline(time.Now().Add(15 * time.Second))
+				var ack dialAck
+				stopAck := context.AfterFunc(ctx, func() { ws.Close() })
+				e = ws.ReadJSON(&ack)
+				stopAck()
+				ws.SetReadDeadline(time.Time{})
+				if e == nil && !ack.OK {
+					if ack.Error == "unsupported" {
+						e = &providerTargetError{detail: ack.Detail}
+					} else if ack.Error == "target" {
+						e = &targetDialError{detail: ack.Detail}
+					} else {
+						e = fmt.Errorf("invalid tunnel connection acknowledgement")
+					}
+				}
+				if e != nil {
+					ws.Close()
+				} else {
+					stream = newStream(ws)
+				}
 			}
 		}
 		if e != nil {
@@ -440,20 +450,25 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 		p.lifeMu.Lock()
 		if p.stopping {
 			p.lifeMu.Unlock()
-			ws.Close()
+			stream.Close()
 			finish(time.Since(start), 0)
 			return nil, fmt.Errorf("proxy is stopping")
 		}
-		p.targets.providerSucceeded(address, n.failureScope())
-		p.mark(n, true)
-		p.success.Add(1)
-		p.active.Add(1)
-		stream := newStream(ws)
 		stream.region = n.Region
 		if n.provider() == "cloudflare" {
 			stream.writeInterval = 0
 		}
-		record.connected(n.Region)
+		var activated atomic.Bool
+		activate := func() {
+			if stream.closing.Load() || !activated.CompareAndSwap(false, true) {
+				return
+			}
+			p.targets.providerSucceeded(address, n.failureScope())
+			p.mark(n, true)
+			p.success.Add(1)
+			p.active.Add(1)
+			record.connected(n.Region)
+		}
 		if record != nil && record.event.Protocol != "HTTP" {
 			stream.onTraffic = record.traffic
 		}
@@ -471,10 +486,17 @@ func (p *provider) dialTunnel(ctx context.Context, network, address string) (con
 			p.lifeMu.Unlock()
 			close(stop)
 			<-p.slots
-			p.active.Add(-1)
+			if activated.Load() {
+				p.active.Add(-1)
+			}
 			if err := finish(time.Since(start), stream.transferred.Load()); err != nil {
 				log.Printf("budget ledger: %v", err)
 			}
+		}
+		if n.provider() == "edgeone" {
+			stream.raw.(*httpStream).setReadyCallback(activate)
+		} else {
+			activate()
 		}
 		p.live[stream] = struct{}{}
 		p.lifeMu.Unlock()
